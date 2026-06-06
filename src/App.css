@@ -379,6 +379,10 @@ body,
   background: var(--pink);
   color: var(--paper);
 }
+.actbtn.danger {
+  background: var(--err);
+  color: var(--paper);
+}
 .notes-count {
   font-size: 11px;
   color: var(--ghost);

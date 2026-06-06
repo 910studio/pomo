@@ -287,6 +287,20 @@ function App() {
     setNoteBody(body);
   }, []);
 
+  // delete a project, fall back to whatever's left
+  const deleteNote = useCallback(async (name: string) => {
+    if (!name) return;
+    await invoke("delete_note", { name }).catch(() => {});
+    const [list, active] = await Promise.all([
+      invoke<string[]>("list_notes").catch(() => [] as string[]),
+      invoke<string>("active_note").catch(() => ""),
+    ]);
+    const body = active ? await invoke<string>("read_note", { name: active }).catch(() => "") : "";
+    setNoteList(list);
+    setActiveNote(active);
+    setNoteBody(body);
+  }, []);
+
   // grow the window while notes are open, shrink back when closed
   useEffect(() => {
     const win = getCurrentWindow();
@@ -667,6 +681,7 @@ function App() {
             onPrev={() => cycleNote(-1)}
             onNext={() => cycleNote(1)}
             onCreate={createNote}
+            onDelete={deleteNote}
             onSaveBody={saveBody}
             onEditingChange={setEditing}
           />
@@ -697,6 +712,7 @@ function NotesPanel({
   onPrev,
   onNext,
   onCreate,
+  onDelete,
   onSaveBody,
   onEditingChange,
 }: {
@@ -708,17 +724,18 @@ function NotesPanel({
   onPrev: () => void;
   onNext: () => void;
   onCreate: (name: string) => Promise<void>;
+  onDelete: (name: string) => Promise<void>;
   onSaveBody: (name: string, content: string) => void;
   onEditingChange: (editing: boolean) => void;
 }) {
   const [creating, setCreating] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
   const [name, setName] = useState("");
   const [text, setText] = useState(body);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const focusedRef = useRef(false);
   const pendingCaret = useRef<[number, number] | null>(null);
-  const idx = Math.max(0, list.indexOf(active));
   const multi = list.length > 1;
 
   // pull file/project changes into the editor only when not actively typing
@@ -871,7 +888,22 @@ function NotesPanel({
             <button className="actbtn" onClick={startCreate} title="new project">
               + new
             </button>
-            <span className="notes-count">{multi ? `${idx + 1}/${list.length}` : ""}</span>
+            <button
+              className={`actbtn ${confirmDel ? "danger" : ""}`}
+              disabled={!active}
+              title="delete this project"
+              onClick={() => {
+                if (confirmDel) {
+                  onDelete(active);
+                  setConfirmDel(false);
+                } else {
+                  setConfirmDel(true);
+                  setTimeout(() => setConfirmDel(false), 2500);
+                }
+              }}
+            >
+              {confirmDel ? "sure?" : "del"}
+            </button>
             <button
               className="actbtn"
               onClick={() => navigator.clipboard.writeText(text).catch(() => {})}

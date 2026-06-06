@@ -149,6 +149,24 @@ fn create_note(name: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Delete a project note. If it was the active one, fall back to the first remaining.
+#[tauri::command]
+fn delete_note(name: String) -> Result<(), String> {
+    let f = note_file(&name);
+    if f.exists() {
+        std::fs::remove_file(&f).map_err(|e| e.to_string())?;
+    }
+    let active_raw = std::fs::read_to_string(notes_dir().join(".active"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if active_raw == sanitize(&name) {
+        let next = list_notes().into_iter().next().unwrap_or_default();
+        let _ = std::fs::write(notes_dir().join(".active"), next);
+    }
+    Ok(())
+}
+
 /// Raycast drops a `.open` file with a project name to pop that project in the widget.
 /// The frontend polls this, acts on it, and clears it (one-shot).
 #[tauri::command]
@@ -181,6 +199,7 @@ pub fn run() {
             active_note,
             set_active_note,
             create_note,
+            delete_note,
             consume_open_request
         ])
         .run(tauri::generate_context!())
