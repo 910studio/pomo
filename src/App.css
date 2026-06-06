@@ -1,0 +1,418 @@
+:root {
+  --pink: rgb(230, 80, 160);
+  --ink: rgb(10, 10, 10);
+  --paper: rgb(219, 214, 207);
+  --mint: rgb(115, 191, 153);
+  --amber: rgb(255, 183, 77);
+  --mid: rgb(82, 82, 91);
+  --err: rgb(185, 28, 28);
+  --ghost: rgb(153, 150, 144);
+
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  -webkit-font-smoothing: antialiased;
+  color: var(--ink);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* transparent window — only the card paints */
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+.widget {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px 16px;
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  border-radius: 18px;
+  /* GrayUI cartoon shadow: hard offset, zero blur */
+  box-shadow: 6px 6px 0 var(--ink);
+  transition: box-shadow 0.12s, transform 0.12s;
+}
+
+.widget.flash {
+  animation: pop 0.35s steps(1) 0s 4;
+}
+@keyframes pop {
+  0% {
+    box-shadow: 6px 6px 0 var(--pink);
+  }
+  50% {
+    box-shadow: 6px 6px 0 var(--mint);
+  }
+}
+
+/* drag bar */
+.bar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: grab;
+}
+.bar:active {
+  cursor: grabbing;
+}
+.brand {
+  font-weight: 800;
+  letter-spacing: 3px;
+  font-size: 13px;
+}
+.x {
+  border: 2px solid var(--ink);
+  background: var(--paper);
+  border-radius: 8px;
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+.x:active {
+  transform: translate(2px, 2px);
+  box-shadow: none;
+}
+
+/* phase tag + cycle dots */
+.phase {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.tag {
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 2px;
+  padding: 3px 10px;
+  border: 2px solid var(--ink);
+  border-radius: 20px;
+  box-shadow: 2px 2px 0 var(--ink);
+  background: var(--paper);
+}
+.tag-ink {
+  background: var(--paper);
+}
+.tag-mid {
+  background: var(--ghost);
+  color: var(--paper);
+}
+.tag-err {
+  background: var(--err);
+  color: var(--paper);
+}
+.tag-mint {
+  background: var(--mint);
+}
+.tag-amber {
+  background: var(--amber);
+}
+
+.dots {
+  display: flex;
+  gap: 7px;
+}
+.dot {
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  background: var(--paper);
+}
+.dot.on {
+  background: var(--pink);
+}
+
+/* big time */
+.time {
+  font-size: 58px;
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -2px;
+}
+.time-ink {
+  color: var(--ink);
+}
+.time-mid {
+  color: var(--mid);
+}
+.time-err {
+  color: var(--err);
+}
+.time-mint {
+  color: var(--mint);
+}
+.time-amber {
+  color: var(--amber);
+}
+
+.colon {
+  animation: blink 1s steps(1) infinite;
+}
+.is-paused .colon {
+  animation: none;
+  opacity: 0.35;
+}
+@keyframes blink {
+  50% {
+    opacity: 0.2;
+  }
+}
+
+/* progress */
+.track {
+  width: 100%;
+  height: 12px;
+  border: 2px solid var(--ink);
+  border-radius: 20px;
+  background: var(--paper);
+  overflow: hidden;
+}
+.fill {
+  height: 100%;
+  background: var(--ink);
+  transition: width 0.3s linear;
+}
+.fill-err {
+  background: var(--err);
+}
+.fill-mid {
+  background: var(--mid);
+}
+.fill-mint {
+  background: var(--mint);
+}
+
+.syncline {
+  font-size: 11px;
+  color: var(--amber);
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+/* controls */
+.controls {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+.btn {
+  flex: 1;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 8px 0;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  box-shadow: 3px 3px 0 var(--ink);
+  transition: transform 0.08s, box-shadow 0.08s;
+}
+.btn:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--ink);
+}
+.btn:active:not(:disabled) {
+  transform: translate(3px, 3px);
+  box-shadow: none;
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  box-shadow: none;
+}
+.btn.primary {
+  background: var(--pink);
+  color: var(--paper);
+}
+.btn.active {
+  background: var(--amber);
+}
+
+.hint {
+  font-size: 10px;
+  color: var(--ghost);
+  letter-spacing: 0.5px;
+}
+
+/* bottom zone: holds either the creature or the notes panel */
+.bottom {
+  flex: 1;
+  min-height: 150px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* the ASCII creature — random per phase, scaled to fit */
+.mascot {
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  white-space: pre;
+  letter-spacing: 0;
+  text-align: center;
+}
+
+/* notes / todo panel (hover) */
+.notes {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+}
+
+/* nav row: arrows locked to the edges, title centered + truncating — never shifts */
+.notes-nav {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 8px;
+}
+.navbtn {
+  font-family: inherit;
+  font-weight: 800;
+  font-size: 18px;
+  line-height: 1;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  background: var(--paper);
+  cursor: pointer;
+  box-shadow: 3px 3px 0 var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.navbtn:active:not(:disabled) {
+  transform: translate(3px, 3px);
+  box-shadow: none;
+}
+.navbtn:disabled {
+  opacity: 0.3;
+  cursor: default;
+  box-shadow: none;
+}
+.notes-title {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.notes-input {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--paper);
+  border: 2px solid var(--pink);
+  border-radius: 8px;
+  padding: 3px 6px;
+  outline: none;
+}
+
+/* action row */
+.notes-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.actbtn {
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 5px 12px;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  box-shadow: 3px 3px 0 var(--ink);
+}
+.actbtn:active:not(:disabled) {
+  transform: translate(3px, 3px);
+  box-shadow: none;
+}
+.actbtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  box-shadow: none;
+}
+.actbtn.primary {
+  background: var(--pink);
+  color: var(--paper);
+}
+.notes-count {
+  font-size: 11px;
+  color: var(--ghost);
+  letter-spacing: 1px;
+}
+/* editable markdown — the actual note editor */
+.notes-edit {
+  flex: 1;
+  width: 100%;
+  resize: none;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.notes-edit:focus {
+  border-color: var(--pink);
+}
+.notes-edit::placeholder {
+  color: var(--ghost);
+}
+.notes-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: var(--ghost);
+  font-style: italic;
+}
