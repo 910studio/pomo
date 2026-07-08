@@ -16,6 +16,10 @@
     "core:window:allow-outer-position",
     "core:window:allow-outer-size",
     "core:window:allow-scale-factor",
-    "core:window:allow-current-monitor"
+    "core:window:allow-current-monitor",
+    "core:window:allow-set-ignore-cursor-events",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-is-registered"
   ]
 }

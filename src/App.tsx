@@ -1,21 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize, LogicalPosition, currentMonitor } from "@tauri-apps/api/window";
-import { ART } from "./art";
+import { listen } from "@tauri-apps/api/event";
+import { useEditor, EditorContent } from "@tiptap/react";
+import { Extension } from "@tiptap/core";
+import StarterKit from "@tiptap/starter-kit";
+import TaskList from "@tiptap/extension-task-list";
+import TaskItem from "@tiptap/extension-task-item";
+import Highlight from "@tiptap/extension-highlight";
+import Placeholder from "@tiptap/extension-placeholder";
+import { Markdown } from "tiptap-markdown";
+import markdownItMark from "markdown-it-mark";
+import { Icon, type IconName } from "./icons";
 import "./App.css";
-
-// mascot panel box (px) — each creature is scaled to fit by font-size.
-// The art was drawn for a terminal grid where a cell is ~2× taller than wide,
-// so we reproduce that cell ratio instead of rendering on square-ish cells.
-const MASCOT_W = 258;
-const MASCOT_H = 150;
-const CHAR_W = 0.6; // monospace advance width ÷ font-size
-const CELL_AR = 2.0; // terminal cell height ÷ width
-const LINE_H = CHAR_W * CELL_AR; // line-height ÷ font-size  (= 1.2)
-// largest font-size where w cols and h rows still fit the box at terminal proportions
-const fitFont = (w: number, h: number) =>
-  Math.min(MASCOT_W / (w * CHAR_W), MASCOT_H / (h * LINE_H));
-const randomArt = () => Math.floor(Math.random() * ART.length);
 
 // ── config (parity with ~/bin/pomo) ──────────────────────
 const WORK = 25 * 60;
@@ -44,19 +41,112 @@ const PHASE_LABEL: Record<Phase, string> = {
   sync: "SYNC",
 };
 
-// window sizes: compact by default, taller while notes are open (width never changes)
-const SIZE_COMPACT = { w: 300, h: 480 };
-const SIZE_NOTES = { w: 300, h: 660 };
+// window sizes (pt). Landscape card hangs under the notch; minimized = time only.
+// Proportions taken from design/*.png (@2x): mini 132×68, card 419×175.
+const MINI = { w: 210, h: 60 }; // minimized: clock + phase only
+const CARD = { w: 500, h: 248 }; // expanded: full landscape card
+const NOTCH_GAP = 8; // breathing room between the physical notch and the widget
+const SHADOW_ROOM = 20; // transparent px below the widget so its drop shadow isn't clipped
+const SIDE_ROOM = 20; // transparent px each side, same reason (shadow spread)
+const FLOAT_HOME = { x: 860, y: 80 };
 
 const setPosOf = (cycle: number) => ((cycle - 1) % CYCLES_PER_SET) + 1;
-const totalOf = (p: Phase) =>
-  p === "work" ? WORK : p === "break" ? SHORT : p === "longbreak" ? LONG : 0;
+const totalOf = (p: Phase, workMin: number) =>
+  p === "work" ? workMin * 60 : p === "break" ? SHORT : p === "longbreak" ? LONG : 0;
 
 // active (non-paused) elapsed ms for the current segment
 function elapsedMs(m: Model): number {
   const livePause = m.paused ? Date.now() - m.pauseStart : 0;
   return Date.now() - m.segStart - m.pauseAcc - livePause;
 }
+
+const fmtRec = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+// WMO weather code → pixel icon (day/night aware)
+type WeatherState = { temp: number; icon: IconName } | null;
+function weatherIcon(code: number, day: boolean): IconName {
+  if (code <= 1) return day ? "sun" : "moon"; // clear / mostly clear
+  if (code <= 3 || code === 45 || code === 48) return "cloudFog"; // cloudy / fog
+  return "cloudRain"; // drizzle, rain, snow, showers, storms
+}
+
+// ── rich notes editor (TipTap/ProseMirror, markdown on disk) ──
+// the serializer escapes markdown chars in plain text (\_ etc.) — undo for display/paths
+const unescMd = (s: string) => s.replace(/\\([\\`*_{}[\]()#+\-.!~])/g, "$1");
+
+// ==highlight== round-trips through markdown; ⌘⇧B toggles it (Raycast Notes habit)
+const MdHighlight = Highlight.extend({
+  priority: 1000, // its ⌘⇧B must beat StarterKit's blockquote binding
+  addKeyboardShortcuts() {
+    return {
+      ...this.parent?.(),
+      "Mod-Shift-b": () => this.editor.commands.toggleHighlight(),
+    };
+  },
+  addStorage() {
+    return {
+      markdown: {
+        serialize: { open: "==", close: "==", mixable: true, expelEnclosingWhitespace: true },
+        parse: {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          setup(md: any) {
+            md.use(markdownItMark);
+          },
+        },
+      },
+    };
+  },
+});
+
+// Esc drops focus back to the widget (so its s/p/q keys work again)
+const EscBlur = Extension.create({
+  name: "escBlur",
+  addKeyboardShortcuts() {
+    return { Escape: () => this.editor.commands.blur() };
+  },
+});
+
+// ⌘Enter checks/unchecks the todo under the caret — no mouse required
+const KeyableTaskItem = TaskItem.extend({
+  addKeyboardShortcuts() {
+    return {
+      ...this.parent?.(),
+      "Mod-Enter": () => {
+        const { $from } = this.editor.state.selection;
+        for (let d = $from.depth; d > 0; d--) {
+          const node = $from.node(d);
+          if (node.type.name === this.name) {
+            const pos = $from.before(d);
+            return this.editor.commands.command(({ tr }) => {
+              tr.setNodeAttribute(pos, "checked", !node.attrs.checked);
+              return true;
+            });
+          }
+        }
+        return false;
+      },
+    };
+  },
+});
+
+const EDITOR_EXTENSIONS = [
+  StarterKit,
+  TaskList,
+  KeyableTaskItem.configure({ nested: true }),
+  MdHighlight,
+  EscBlur,
+  Placeholder.configure({ placeholder: "- [ ] write a todo · # heading · plain lines too" }),
+  Markdown.configure({ html: false, bulletListMarker: "-", breaks: true, transformPastedText: true }),
+];
+
+// blob → bare base64 (data-URL prefix stripped) for the save_memo IPC
+const blobToB64 = (b: Blob) =>
+  new Promise<string>((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res((r.result as string).split(",", 2)[1] ?? "");
+    r.onerror = () => rej(r.error);
+    r.readAsDataURL(b);
+  });
 
 function App() {
   const m = useRef<Model>({
@@ -69,16 +159,111 @@ function App() {
     paused: false,
   });
 
+  // adjustable work-session length (minutes), persisted across launches
+  const [workMin, setWorkMinState] = useState(() => {
+    const v = parseInt(localStorage.getItem("pomo.workMin") || "25", 10);
+    return v >= 1 && v <= 120 ? v : 25;
+  });
+  const workMinRef = useRef(workMin);
+  useEffect(() => {
+    workMinRef.current = workMin;
+  }, [workMin]);
+  const setWorkMin = useCallback((v: number) => {
+    const clamped = Math.max(1, Math.min(120, v));
+    setWorkMinState(clamped);
+    localStorage.setItem("pomo.workMin", String(clamped));
+  }, []);
+
   // render-facing state
   const [phase, setPhase] = useState<Phase>("idle");
   const [cycle, setCycle] = useState(1);
   const [secs, setSecs] = useState(WORK); // remaining (countdown) or elapsed (sync)
   const [paused, setPaused] = useState(false);
   const [flash, setFlash] = useState(false);
-  const [artIdx, setArtIdx] = useState(randomArt); // a fresh creature each phase
-  const [notesHover, setNotesHover] = useState(false); // hovering the bottom zone
+  const [notesHover] = useState(false); // legacy hover flag (kept for key nav guard)
   const [notesPinned, setNotesPinned] = useState(false); // Cmd+P pinned open
-  const showNotes = notesHover || notesPinned;
+  const [showCheat, setShowCheat] = useState(false); // "?" shortcut cheat sheet
+  const showCheatRef = useRef(false);
+  useEffect(() => {
+    showCheatRef.current = showCheat;
+  }, [showCheat]);
+
+  // notch mode (the default home): the app lives behind the MacBook notch,
+  // expands on hover / on cycle completion — dynamic island style. n → float.
+  const [notchMode, setNotchMode] = useState(true);
+  const [notchOut, setNotchOut] = useState(false); // expanded (hovered) vs tucked away
+  const [notchH, setNotchH] = useState(32); // notch strip height, reported by the backend
+  const notchModeRef = useRef(false);
+  const notchOutRef = useRef(false);
+  const peekUntil = useRef(0); // an announce-peek stays out until this timestamp
+  useEffect(() => {
+    notchModeRef.current = notchMode;
+  }, [notchMode]);
+  useEffect(() => {
+    notchOutRef.current = notchOut;
+  }, [notchOut]);
+
+  const toggleNotch = useCallback(() => {
+    setNotchOut(false);
+    setNotchMode((v) => !v);
+  }, []);
+
+  // hover must work while ANY app is focused — an inactive window gets no DOM
+  // mouseenter events, so poll a native global-pointer hit test instead. The
+  // window is always card-sized, so we test only the VISIBLE sub-rect: the small
+  // pill when collapsed, the full card when open (+8px slack for easy targeting).
+  useEffect(() => {
+    if (!notchMode) return;
+    let outSince = 0;
+    let alive = true;
+    const winW = CARD.w + 2 * SIDE_ROOM;
+    const top = notchH + NOTCH_GAP;
+    const tick = async () => {
+      if (!alive) return;
+      const open = notchOutRef.current;
+      const rw = open ? CARD.w : MINI.w;
+      const rh = open ? CARD.h : MINI.h;
+      const rect = { x: (winW - rw) / 2 - 8, y: top - 8, w: rw + 16, h: rh + 16 };
+      const over = await invoke<boolean>("mouse_over", rect).catch(() => false);
+      if (over) {
+        outSince = 0;
+        if (!notchOutRef.current) setNotchOut(true);
+      } else if (notchOutRef.current) {
+        // stay out while pinned notes or an announce-peek is running (recording
+        // no longer holds it open — the pill shows the live waveform instead)
+        if (notesPinnedRef.current || Date.now() < peekUntil.current) {
+          outSince = 0;
+        } else if (!outSince) {
+          outSince = Date.now();
+        } else if (Date.now() - outSince > 140) {
+          outSince = 0;
+          setNotchOut(false);
+        }
+      }
+      if (alive) id = setTimeout(tick, 60);
+    };
+    let id = setTimeout(tick, 60);
+    return () => {
+      alive = false;
+      clearTimeout(id);
+    };
+  }, [notchMode]);
+
+  // cycle done → in notch mode the widget itself peeks out for 5s (hovering it
+  // keeps it out); in float mode fall back to the macOS notification
+  const announce = useCallback((label: string, dur: number) => {
+    if (notchModeRef.current) {
+      peekUntil.current = Date.now() + 5000;
+      setNotchOut(true);
+      invoke("ding").catch(() => {});
+    } else {
+      invoke("notify", { label, dur }).catch(() => {});
+    }
+  }, []);
+  // the big landscape card (with notes) is shown whenever expanded or floating;
+  // minimized (notch, not hovered) shows just the clock
+  const cardOpen = !notchMode || notchOut;
+  const showNotes = cardOpen; // notes live in the card now — no separate reveal
   const notesHoverRef = useRef(false);
   const notesPinnedRef = useRef(false);
   useEffect(() => {
@@ -95,6 +280,45 @@ function App() {
   const [newNonce, setNewNonce] = useState(0); // bump → open in "name a new project" mode
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // voice memo (sync mode only): mic → MediaRecorder → ~/.pomo/memos/
+  const [recording, setRecording] = useState(false);
+  const [recSecs, setRecSecs] = useState(0);
+  const [recErr, setRecErr] = useState(false);
+  const recRef = useRef<MediaRecorder | null>(null);
+  const recChunks = useRef<Blob[]>([]);
+  const recStart = useRef(0);
+  const recDone = useRef<Promise<void> | null>(null); // resolves once the memo is saved
+  // live spectrum while recording (drawn to every visible .wavecv canvas)
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+
+  // weather (IP location → Open-Meteo, both free/no-key), refreshed hourly
+  const [weather, setWeather] = useState<WeatherState>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        // ipwho.is: HTTPS, CORS *, no key, generous limits
+        const loc = await fetch("https://ipwho.is/").then((r) => r.json());
+        if (!loc?.latitude) return;
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&current_weather=true`;
+        const cw = (await fetch(url).then((r) => r.json()))?.current_weather;
+        if (alive && cw)
+          setWeather({ temp: Math.round(cw.temperature), icon: weatherIcon(cw.weathercode, cw.is_day === 1) });
+      } catch {
+        /* offline → just no weather */
+      }
+    };
+    load();
+    const id = setInterval(load, 60 * 60 * 1000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+  // memo line appended to a note → mirrored into the open editor (survives mid-edit)
+  const [memoAppend, setMemoAppend] = useState({ n: 0, line: "", name: "" });
+
   const sync = useCallback(() => {
     const cur = m.current;
     setPhase(cur.phase);
@@ -103,17 +327,28 @@ function App() {
     if (cur.phase === "sync") {
       setSecs(Math.floor(elapsedMs(cur) / 1000));
     } else if (cur.phase === "idle") {
-      setSecs(WORK);
+      setSecs(workMinRef.current * 60);
     } else {
       setSecs(Math.max(0, cur.total - Math.floor(elapsedMs(cur) / 1000)));
     }
   }, []);
 
+  // changing the work length re-times a running (or idle) work session live
+  useEffect(() => {
+    const cur = m.current;
+    if (cur.phase === "work") {
+      cur.total = workMin * 60;
+      sync();
+    } else if (cur.phase === "idle") {
+      sync();
+    }
+  }, [workMin, sync]);
+
   const log = useCallback(
     (type: string, activeSec: number, cycleNum?: number, note?: string) => {
       const end = Date.now();
       const start = end - activeSec * 1000;
-      invoke("log_event", {
+      return invoke("log_event", {
         payload: {
           event_type: type,
           start_ts: start / 1000,
@@ -131,19 +366,186 @@ function App() {
     setTimeout(() => setFlash(false), 1400);
   }, []);
 
+  // ── sync-mode voice memo ───────────────────────────────
+  // stop the recorder; returns a promise that resolves once the file is saved
+  const stopMemo = useCallback(() => {
+    const rec = recRef.current;
+    recRef.current = null;
+    setRecording(false);
+    if (rec && rec.state !== "inactive") rec.stop(); // onstop does the save
+    return recDone.current ?? Promise.resolve();
+  }, []);
+
+  const startMemo = useCallback(async () => {
+    if (recRef.current) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // WKWebView records AAC natively; webm is the cross-engine fallback (dev browser)
+      const mime = MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "audio/webm";
+      const ext = mime === "audio/mp4" ? "m4a" : "webm";
+      const rec = new MediaRecorder(stream, { mimeType: mime });
+      recChunks.current = [];
+      recStart.current = Date.now();
+      // tap the same stream for the live spectrum
+      try {
+        const actx = new AudioContext();
+        actx.resume().catch(() => {});
+        const analyser = actx.createAnalyser();
+        analyser.fftSize = 512; // 256 bins — snappy spectrum response
+        analyser.smoothingTimeConstant = 0.6;
+        actx.createMediaStreamSource(stream).connect(analyser);
+        audioCtxRef.current = actx;
+        analyserRef.current = analyser;
+      } catch {
+        /* no waveform, recording still works */
+      }
+      let done: () => void = () => {};
+      recDone.current = new Promise<void>((r) => (done = r));
+      rec.ondataavailable = (e) => {
+        if (e.data.size) recChunks.current.push(e.data);
+      };
+      rec.onstop = async () => {
+        try {
+          stream.getTracks().forEach((t) => t.stop());
+          analyserRef.current = null;
+          audioCtxRef.current?.close().catch(() => {});
+          audioCtxRef.current = null;
+          const secs = Math.max(1, Math.round((Date.now() - recStart.current) / 1000));
+          const blob = new Blob(recChunks.current, { type: mime });
+          recChunks.current = [];
+          if (!blob.size) return;
+          const b64 = await blobToB64(blob);
+          const path = await invoke<string>("save_memo", { dataB64: b64, ext }).catch(() => "");
+          if (!path) return;
+          await log("memo", secs);
+          // drop a pointer into the active project note
+          const name = await invoke<string>("active_note").catch(() => "");
+          if (name) {
+            const body = await invoke<string>("read_note", { name }).catch(() => "");
+            const stamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+            const line = `- 🎤 sync memo ${stamp} (${fmtRec(secs)}) → ${path}`;
+            await invoke("write_note", { name, content: `${body.replace(/\n*$/, "\n")}${line}\n` }).catch(
+              () => {},
+            );
+            // mirror into the open editor so a mid-edit autosave doesn't drop the line
+            setMemoAppend((p) => ({ n: p.n + 1, line, name }));
+          }
+        } finally {
+          done();
+        }
+      };
+      rec.start();
+      recRef.current = rec;
+      setRecSecs(0);
+      setRecording(true);
+    } catch {
+      // mic denied / unavailable — flash the syncline
+      setRecErr(true);
+      setTimeout(() => setRecErr(false), 2500);
+    }
+  }, [log]);
+
+  const toggleMemo = useCallback(() => {
+    if (m.current.phase !== "sync") return;
+    if (recRef.current) stopMemo();
+    else startMemo();
+  }, [startMemo, stopMemo]);
+
+  // live rec duration while recording
+  useEffect(() => {
+    if (!recording) return;
+    const id = setInterval(() => setRecSecs(Math.floor((Date.now() - recStart.current) / 1000)), 500);
+    return () => clearInterval(id);
+  }, [recording]);
+
+  // pixel frequency spectrum: chunky bars per band, heights quantized to a grid,
+  // mirrored around the midline, live-dancing with the mic. Draws to every visible
+  // .wavecv (pill layer + card layer both mount during the morph crossfade).
+  useEffect(() => {
+    if (!recording) return;
+    const an = analyserRef.current;
+    if (!an) return;
+    const dpr = window.devicePixelRatio || 1;
+    const CELL = Math.max(2, Math.round(3 * dpr)); // pixel grid unit
+    const BAR = CELL * 2;
+    const GAP = CELL;
+    const color =
+      getComputedStyle(document.documentElement).getPropertyValue("--amber").trim() || "#d98a2b";
+    const bins = new Uint8Array(an.frequencyBinCount);
+    const usable = Math.floor(an.frequencyBinCount * 0.55); // voice sits in the low bins
+    let raf = 0;
+    let frame = 0;
+    const paint = (cv: HTMLCanvasElement) => {
+      if (!cv.clientWidth) return;
+      const w = Math.round(cv.clientWidth * dpr);
+      const h = Math.round(cv.clientHeight * dpr);
+      if (cv.width !== w) cv.width = w;
+      if (cv.height !== h) cv.height = h;
+      const N = Math.max(1, Math.floor((w + GAP) / (BAR + GAP)));
+      const rows = Math.max(1, Math.floor(h / 2 / CELL));
+      const g = cv.getContext("2d");
+      if (!g) return;
+      g.clearRect(0, 0, w, h);
+      g.fillStyle = color;
+      const mid = h / 2;
+      const offX = Math.round((w - (N * (BAR + GAP) - GAP)) / 2); // center the bar group
+      for (let i = 0; i < N; i++) {
+        const s = Math.floor((i / N) * usable);
+        const e = Math.max(s + 1, Math.floor(((i + 1) / N) * usable));
+        let m = 0;
+        for (let b = s; b < e; b++) m += bins[b];
+        const v = Math.min(1, (m / (e - s) / 255) * 1.6); // gain (analyser pre-smooths)
+        const cells = Math.max(1, Math.round(v * rows));
+        const bh = cells * CELL * 2;
+        g.fillRect(offX + i * (BAR + GAP), mid - bh / 2, BAR, bh);
+      }
+    };
+    const draw = () => {
+      raf = requestAnimationFrame(draw);
+      if (frame++ % 2) return; // ~30fps, keeps the pixel steps readable
+      an.getByteFrequencyData(bins);
+      document.querySelectorAll<HTMLCanvasElement>("canvas.wavecv").forEach(paint);
+    };
+    raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
+  }, [recording]);
+
+  // memo playback (native afplay) — state lives here so audio survives the panel closing
+  const [playingMemo, setPlayingMemo] = useState("");
+  const togglePlayMemo = useCallback(
+    async (path: string) => {
+      if (playingMemo === path) {
+        setPlayingMemo("");
+        invoke("memo_stop").catch(() => {});
+        return;
+      }
+      const ok = await invoke("memo_play", { path }).then(() => true).catch(() => false);
+      setPlayingMemo(ok ? path : "");
+    },
+    [playingMemo],
+  );
+  // poll afplay so the ▶ chip resets when the memo runs out on its own
+  useEffect(() => {
+    if (!playingMemo) return;
+    const id = setInterval(async () => {
+      const on = await invoke<boolean>("memo_playing").catch(() => false);
+      if (!on) setPlayingMemo("");
+    }, 500);
+    return () => clearInterval(id);
+  }, [playingMemo]);
+
   // begin a fresh countdown / sync segment
   const startPhase = useCallback(
     (p: Phase, cycleNum: number) => {
       m.current = {
         phase: p,
         cycle: cycleNum,
-        total: totalOf(p),
+        total: totalOf(p, workMinRef.current),
         segStart: Date.now(),
         pauseAcc: 0,
         pauseStart: 0,
         paused: false,
       };
-      setArtIdx(randomArt());
       sync();
     },
     [sync],
@@ -155,17 +557,17 @@ function App() {
     if (cur.phase === "work") {
       const sp = setPosOf(cur.cycle);
       log("work", cur.total, sp);
-      invoke("notify", { label: "WORK", dur: Math.round(cur.total / 60) }).catch(() => {});
+      announce("WORK", Math.round(cur.total / 60));
       celebrate();
       startPhase(sp === CYCLES_PER_SET ? "longbreak" : "break", cur.cycle);
     } else if (cur.phase === "break" || cur.phase === "longbreak") {
       log("break", cur.total);
       const label = cur.phase === "longbreak" ? "LONG BREAK" : "BREAK";
-      invoke("notify", { label, dur: Math.round(cur.total / 60) }).catch(() => {});
+      announce(label, Math.round(cur.total / 60));
       celebrate();
       startPhase("work", cur.cycle + 1);
     }
-  }, [log, celebrate, startPhase]);
+  }, [log, announce, celebrate, startPhase]);
 
   // ── controls ───────────────────────────────────────────
   const start = useCallback(() => startPhase("work", 1), [startPhase]);
@@ -214,20 +616,24 @@ function App() {
   const endSync = useCallback(() => {
     const cur = m.current;
     if (cur.phase !== "sync") return;
+    stopMemo(); // a memo can't outlive its sync — save whatever's recorded
     log("sync", Math.floor(elapsedMs(cur) / 1000));
     startPhase("work", cur.cycle); // redo the interrupted work session
-  }, [log, startPhase]);
+  }, [log, startPhase, stopMemo]);
 
   const quit = useCallback(async () => {
+    invoke("memo_stop").catch(() => {}); // don't leave an orphaned afplay talking
+    await stopMemo().catch(() => {}); // flush an in-flight memo before the window dies
     const cur = m.current;
     if (cur.phase !== "idle") {
       const active = Math.floor(elapsedMs(cur) / 1000);
-      if (cur.phase === "work") log("work", active, setPosOf(cur.cycle), "partial");
-      else if (cur.phase === "sync") log("sync", active);
-      else log("break", active, undefined, "partial");
+      // await: the window must not close before the final event lands on disk
+      if (cur.phase === "work") await log("work", active, setPosOf(cur.cycle), "partial");
+      else if (cur.phase === "sync") await log("sync", active);
+      else await log("break", active, undefined, "partial");
     }
     await getCurrentWindow().close();
-  }, [log]);
+  }, [log, stopMemo]);
 
   // ── tick: 1s, recomputes from timestamps, only repaints on change ──
   useEffect(() => {
@@ -301,12 +707,60 @@ function App() {
     setNoteBody(body);
   }, []);
 
-  // grow the window while notes are open, shrink back when closed
+  // window geometry: in notch mode the window stays permanently card-sized and
+  // the morph animates INSIDE it — no per-toggle resize means no resize flicker.
+  // Click-through (below) keeps the empty area from blocking other apps.
+  // On a COLD launch NSScreen isn't ready yet, so notch_dock can fail/mis-dock —
+  // retry with backoff until it reports a valid notch/menu-bar height.
   useEffect(() => {
-    const win = getCurrentWindow();
-    const s = showNotes ? SIZE_NOTES : SIZE_COMPACT;
-    win.setSize(new LogicalSize(s.w, s.h)).catch(() => {});
-  }, [showNotes]);
+    if (!notchMode) {
+      getCurrentWindow().setSize(new LogicalSize(CARD.w, CARD.h)).catch(() => {});
+      return;
+    }
+    let alive = true;
+    let tries = 0;
+    const attempt = () => {
+      invoke<number>("notch_dock", {
+        w: CARD.w + 2 * SIDE_ROOM,
+        h: notchH + NOTCH_GAP + CARD.h + SHADOW_ROOM,
+        float: false,
+      })
+        .then((nh) => {
+          if (!alive) return;
+          if (nh) setNotchH(nh);
+          else if (tries++ < 12) setTimeout(attempt, 200); // screen not ready → retry
+        })
+        .catch(() => {
+          if (alive && tries++ < 12) setTimeout(attempt, 200);
+        });
+    };
+    attempt();
+    return () => {
+      alive = false;
+    };
+  }, [notchMode, notchH]);
+
+  // click-through when collapsed so the big transparent window doesn't eat clicks
+  // in empty space; interactive when expanded. Hover is detected natively regardless.
+  useEffect(() => {
+    if (!notchMode) {
+      getCurrentWindow().setIgnoreCursorEvents(false).catch(() => {});
+      return;
+    }
+    getCurrentWindow().setIgnoreCursorEvents(!notchOut).catch(() => {});
+  }, [notchMode, notchOut]);
+
+  // leaving notch mode → restore the floating window level + home position
+  const wasNotch = useRef(false);
+  useEffect(() => {
+    if (wasNotch.current && !notchMode) {
+      invoke("notch_dock", { w: 0, h: 0, float: true }).catch(() => {});
+      getCurrentWindow()
+        .setPosition(new LogicalPosition(FLOAT_HOME.x, FLOAT_HOME.y))
+        .catch(() => {});
+    }
+    wasNotch.current = notchMode;
+  }, [notchMode]);
 
   // Raycast → "open this project in the widget": poll the one-shot trigger file
   useEffect(() => {
@@ -417,8 +871,9 @@ function App() {
     };
 
     const onWheel = (e: WheelEvent) => {
+      if (notchModeRef.current) return; // docked to the notch — nothing to drag
       const t = e.target as HTMLElement | null;
-      if (t && t.closest(".notes-edit")) return; // editor scrolls itself
+      if (t && t.closest(".notes-edit, .memos")) return; // editor + memo chips scroll themselves
       e.preventDefault();
       if (!pos) return;
       const dx = -e.deltaX;
@@ -521,9 +976,15 @@ function App() {
         }
         return;
       }
-      // Esc closes the pinned panel
+      // ? toggles the cheat sheet
+      if (e.key === "?") {
+        setShowCheat((v) => !v);
+        return;
+      }
+      // Esc closes the cheat sheet first, then the pinned panel
       if (k === "escape") {
-        setNotesPinned(false);
+        if (showCheatRef.current) setShowCheat(false);
+        else setNotesPinned(false);
         return;
       }
       // while notes are open, arrows navigate projects
@@ -543,6 +1004,8 @@ function App() {
       if (e.metaKey) return;
 
       if (k === "s") toggleSync();
+      else if (k === "m") toggleMemo();
+      else if (k === "n") toggleNotch();
       else if (k === "p") togglePause();
       else if (k === " " || k === "enter") {
         e.preventDefault();
@@ -551,7 +1014,26 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleSync, togglePause, skip, quit, cycleNote]);
+  }, [toggleSync, toggleMemo, toggleNotch, togglePause, skip, quit, cycleNote]);
+
+  // global hotkeys (⌃⌥…) emitted from the backend — work while any app is focused
+  useEffect(() => {
+    const un = listen<string>("hotkey", ({ payload }) => {
+      if (payload === "sync") toggleSync();
+      else if (payload === "pause") togglePause();
+      else if (payload === "memo") toggleMemo();
+      else if (payload === "notch") toggleNotch();
+      else if (payload === "skip") skip();
+      else if (payload === "peek") {
+        // pop the widget out of the notch for a few seconds
+        peekUntil.current = Date.now() + 4000;
+        setNotchOut(true);
+      }
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, [toggleSync, togglePause, toggleMemo, toggleNotch, skip]);
 
   // auto-start a work block the moment the widget launches (no manual click)
   useEffect(() => {
@@ -597,7 +1079,7 @@ function App() {
   const ss = secs % 60;
   const timeStr = `${String(mins).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 
-  const total = totalOf(phase);
+  const total = totalOf(phase, workMin);
   const pct = !isSync && total > 0 ? Math.min(100, ((total - secs) / total) * 100) : 0;
 
   let tone = "ink";
@@ -610,93 +1092,203 @@ function App() {
 
   const setPos = setPosOf(cycle);
 
-  return (
-    <div className={`widget ${flash ? "flash" : ""}`} data-tauri-drag-region="deep">
-      <div className="bar">
-        <span className="brand">POMO</span>
-        <button className="x" onClick={quit} title="quit (q)">
-          ✕
-        </button>
-      </div>
+  const clockHi = timeStr.split(":")[0];
+  const clockLo = timeStr.split(":")[1];
 
-      <div className="phase">
-        <span className={`tag tag-${tone}`}>{PHASE_LABEL[phase]}</span>
-        {phase !== "idle" && !isSync && (
-          <span className="dots">
-            {Array.from({ length: CYCLES_PER_SET }, (_, i) => (
-              <span key={i} className={`dot ${i < setPos ? "on" : ""}`} />
-            ))}
-          </span>
+  // pill (minimized) content — clock + status/spectrum
+  const pillBody = (
+    <>
+      <div className="pill-clock">
+        <span className="clockglyph">
+          {clockHi}
+          <span className="pill-colon">:</span>
+          {clockLo}
+        </span>
+      </div>
+      <div className="pill-side">
+        {recording ? (
+          <div className="pill-wave">
+            <canvas className="wavecv" />
+            <span className="pill-rectime">{fmtRec(recSecs)}</span>
+          </div>
+        ) : (
+          <>
+            <span className={`ptag tag-${tone}`}>{PHASE_LABEL[phase]}</span>
+            {phase !== "idle" && !isSync && (
+              <span className="pdots">
+                {Array.from({ length: CYCLES_PER_SET }, (_, i) => (
+                  <span key={i} className={`pdot ${i < setPos ? "on" : ""}`} />
+                ))}
+              </span>
+            )}
+          </>
         )}
       </div>
+    </>
+  );
 
-      <div className={`time time-${tone} ${paused ? "is-paused" : ""}`}>
-        {timeStr.split(":")[0]}
-        <span className="colon">:</span>
-        {timeStr.split(":")[1]}
+  // card (expanded) content — left panel + controls, right notes, cheat overlay
+  const cardBody = (
+    <>
+      <div className="card-l">
+        <div className="panel">
+          {weather && !(isSync && recording) && (
+            <div className="panel-weather">
+              <Icon name={weather.icon} size={13} />
+              {weather.temp}°
+            </div>
+          )}
+          <div className={`panel-time time-${tone} ${paused ? "is-paused" : ""}`}>
+            <span className="clockglyph">
+              {clockHi}
+              <span className="panel-colon">:</span>
+              {clockLo}
+            </span>
+          </div>
+
+          {isSync && recording ? (
+            <div className="panel-wave">
+              <canvas className="wavecv" />
+              <span className="rectime">{fmtRec(recSecs)}</span>
+            </div>
+          ) : isSync ? (
+            <div className="panel-status">
+              <span className="ptag tag-amber">{recErr ? "MIC BLOCKED" : "SYNC"}</span>
+              <span className="synchint">▲ counting up</span>
+            </div>
+          ) : (
+            <div className="panel-status">
+              <span className={`ptag tag-${tone}`}>{PHASE_LABEL[phase]}</span>
+              {phase !== "idle" && (
+                <span className="pdots">
+                  {Array.from({ length: CYCLES_PER_SET }, (_, i) => (
+                    <span key={i} className={`pdot ${i < setPos ? "on" : ""}`} />
+                  ))}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="ctl">
+          <button
+            className="cbtn"
+            onClick={phase === "idle" ? start : togglePause}
+            title={phase === "idle" ? "start" : paused ? "resume (p)" : "pause (p)"}
+          >
+            <Icon name={phase !== "idle" && !paused ? "pause" : "play"} size={18} />
+          </button>
+          <button className="cbtn" onClick={skip} disabled={phase === "idle"} title={isSync ? "end (space)" : "skip (space)"}>
+            <Icon name="play" size={18} />
+          </button>
+          <button
+            className={`cbtn ${isSync ? "active" : ""}`}
+            onClick={toggleSync}
+            disabled={phase === "idle"}
+            title="sync (s)"
+          >
+            <Icon name="circleNotch" size={18} />
+          </button>
+          {isSync && (
+            <button className={`cbtn ${recording ? "rec" : ""}`} onClick={toggleMemo} title="voice memo (m)">
+              <span className={recording ? "sq" : "dot"} />
+            </button>
+          )}
+        </div>
       </div>
 
-      {!isSync && (
-        <div className="track">
-          <div className={`fill fill-${tone}`} style={{ width: `${pct}%` }} />
+      <div className="card-r">
+        <NotesPanel
+          list={noteList}
+          active={activeNote}
+          body={noteBody}
+          editNonce={editNonce}
+          newNonce={newNonce}
+          appendReq={memoAppend}
+          playing={playingMemo}
+          onTogglePlay={togglePlayMemo}
+          onPrev={() => cycleNote(-1)}
+          onNext={() => cycleNote(1)}
+          onCreate={createNote}
+          onDelete={deleteNote}
+          onSaveBody={saveBody}
+          onEditingChange={setEditing}
+          onHelp={() => setShowCheat(true)}
+          workMin={workMin}
+          onSetWorkMin={setWorkMin}
+        />
+      </div>
+
+      {showCheat && (
+        <div className="cheat" onClick={() => setShowCheat(false)}>
+          <div className="cheat-cols">
+            <div>
+              <div className="cheat-sec">global — work anywhere</div>
+              <div className="cheat-grid">
+                <kbd>⌃⌥S</kbd><span>sync on/off</span>
+                <kbd>⌃⌥M</kbd><span>voice memo</span>
+                <kbd>⌃⌥P</kbd><span>pause / resume</span>
+                <kbd>⌃⌥↵</kbd><span>skip phase</span>
+                <kbd>⌃⌥N</kbd><span>notch ⇄ float</span>
+                <kbd>⌃⌥K</kbd><span>peek out</span>
+              </div>
+              <div className="cheat-sec">when focused</div>
+              <div className="cheat-grid">
+                <kbd>s p m n q</kbd><span>same, bare keys</span>
+                <kbd>⌘P</kbd><span>notes / next</span>
+                <kbd>←→</kbd><span>switch project</span>
+              </div>
+            </div>
+            <div>
+              <div className="cheat-sec">editor</div>
+              <div className="cheat-grid">
+                <kbd>⌘B</kbd><span>bold</span>
+                <kbd>⌘⇧B</kbd><span>highlight</span>
+                <kbd>⌘I</kbd><span>italic</span>
+                <kbd>⌘⇧X</kbd><span>strikethrough</span>
+                <kbd>#␣</kbd><span>heading</span>
+                <kbd>-␣</kbd><span>bullet list</span>
+                <kbd>-[]␣</kbd><span>todo</span>
+                <kbd>⇥</kbd><span>nest sublist</span>
+                <kbd>⇧⇥</kbd><span>un-nest</span>
+                <kbd>⌘↵</kbd><span>toggle todo</span>
+                <kbd>⌘Z</kbd><span>undo</span>
+              </div>
+            </div>
+          </div>
         </div>
       )}
-      {isSync && <div className="syncline">● counting up — no limit</div>}
+    </>
+  );
 
-      <div className="controls">
-        {phase === "idle" ? (
-          <button className="btn primary" onClick={start}>
-            start
-          </button>
-        ) : (
-          <button className="btn" onClick={togglePause}>
-            {paused ? "resume" : "pause"}
-          </button>
-        )}
-        <button className="btn" onClick={skip} disabled={phase === "idle"}>
-          {isSync ? "end" : "skip"}
-        </button>
-        <button className={`btn ${isSync ? "active" : ""}`} onClick={toggleSync} disabled={phase === "idle"}>
-          sync
-        </button>
+  const morphVars = {
+    "--mini-w": `${MINI.w}px`,
+    "--mini-h": `${MINI.h}px`,
+    "--card-w": `${CARD.w}px`,
+    "--card-h": `${CARD.h}px`,
+  } as CSSProperties;
+
+  // ── NOTCH: one container that stretches between pill and card (Figma-morph) ──
+  if (notchMode) {
+    return (
+      <div className="notchwrap" style={{ paddingTop: `${notchH + NOTCH_GAP}px` }}>
+        <div
+          className={`morph ${notchOut ? "open" : ""} ${flash ? "flash" : ""}`}
+          style={morphVars}
+          onMouseEnter={() => setNotchOut(true)}
+        >
+          <div className="morph-pill">{pillBody}</div>
+          <div className="morph-card">{cardBody}</div>
+        </div>
       </div>
+    );
+  }
 
-      <div className="hint">
-        {showNotes ? "← → switch project · esc close" : "s · p · space · q   ·   ⌘P todos"}
-      </div>
-
-      {/* bottom zone: creature by default, hover → todo list (live from ~/.pomo/notes.md) */}
-      <div
-        className="bottom"
-        onMouseEnter={() => setNotesHover(true)}
-        onMouseLeave={() => setNotesHover(false)}
-      >
-        {showNotes ? (
-          <NotesPanel
-            list={noteList}
-            active={activeNote}
-            body={noteBody}
-            editNonce={editNonce}
-            newNonce={newNonce}
-            onPrev={() => cycleNote(-1)}
-            onNext={() => cycleNote(1)}
-            onCreate={createNote}
-            onDelete={deleteNote}
-            onSaveBody={saveBody}
-            onEditingChange={setEditing}
-          />
-        ) : (
-          <pre
-            className="mascot"
-            style={{
-              fontSize: `${fitFont(ART[artIdx].w, ART[artIdx].h)}px`,
-              lineHeight: `${fitFont(ART[artIdx].w, ART[artIdx].h) * LINE_H}px`,
-              color: `rgb(${ART[artIdx].rgb[0]}, ${ART[artIdx].rgb[1]}, ${ART[artIdx].rgb[2]})`,
-            }}
-          >
-            {ART[artIdx].lines.join("\n")}
-          </pre>
-        )}
+  // ── FLOAT: the card as a draggable window ──
+  return (
+    <div className="floatwrap">
+      <div className={`card ${flash ? "flash" : ""}`} data-tauri-drag-region="deep">
+        {cardBody}
       </div>
     </div>
   );
@@ -709,116 +1301,112 @@ function NotesPanel({
   body,
   editNonce,
   newNonce,
+  appendReq,
+  playing,
+  onTogglePlay,
   onPrev,
   onNext,
   onCreate,
   onDelete,
   onSaveBody,
   onEditingChange,
+  onHelp,
+  workMin,
+  onSetWorkMin,
 }: {
   list: string[];
   active: string;
   body: string;
   editNonce: number;
   newNonce: number;
+  appendReq: { n: number; line: string; name: string };
+  playing: string;
+  onTogglePlay: (path: string) => void;
   onPrev: () => void;
   onNext: () => void;
   onCreate: (name: string) => Promise<void>;
   onDelete: (name: string) => Promise<void>;
   onSaveBody: (name: string, content: string) => void;
   onEditingChange: (editing: boolean) => void;
+  onHelp: () => void;
+  workMin: number;
+  onSetWorkMin: (v: number) => void;
 }) {
   const [creating, setCreating] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false); // hamburger dropdown
   const [name, setName] = useState("");
-  const [text, setText] = useState(body);
-  const taRef = useRef<HTMLTextAreaElement>(null);
+  const [md, setMd] = useState(body); // latest markdown, for chips + copy
+  const mdRef = useRef(body); // what the editor last serialized (loop guard)
+  const contentNote = useRef(active); // which note the editor content belongs to
   const inputRef = useRef<HTMLInputElement>(null);
-  const focusedRef = useRef(false);
-  const pendingCaret = useRef<[number, number] | null>(null);
   const multi = list.length > 1;
 
-  // pull file/project changes into the editor only when not actively typing
+  const editor = useEditor({
+    extensions: EDITOR_EXTENSIONS,
+    content: body,
+    onUpdate: ({ editor: ed }) => {
+      const m = ed.storage.markdown.getMarkdown();
+      mdRef.current = m;
+      setMd(m);
+      // save against the note the content belongs to, not whatever just became active
+      onSaveBody(contentNote.current, m);
+    },
+    onFocus: () => onEditingChange(true),
+    onBlur: () => onEditingChange(false),
+    editorProps: { attributes: { class: "notes-rich", spellcheck: "false" } },
+  });
+
+  // pull file/project changes in: always on a project switch, otherwise only
+  // when not actively typing (the file poll must not clobber the caret)
   useEffect(() => {
-    if (!focusedRef.current) setText(body);
-  }, [body]);
+    if (!editor) return;
+    const switching = contentNote.current !== active;
+    if (!switching && (editor.isFocused || body === mdRef.current)) return;
+    contentNote.current = active;
+    mdRef.current = body;
+    setMd(body);
+    editor.commands.setContent(body, false);
+  }, [editor, body, active]);
 
-  // restore caret after a programmatic edit (bold/highlight/list-continue)
+  // memo saved → splice its bullet into the live doc (the file already has it;
+  // this keeps the next autosave from erasing the line mid-edit)
   useEffect(() => {
-    if (pendingCaret.current && taRef.current) {
-      const [s, e] = pendingCaret.current;
-      taRef.current.setSelectionRange(s, e);
-      pendingCaret.current = null;
-    }
-  }, [text]);
+    const { n, line, name: target } = appendReq;
+    if (!n || !line || !editor || target !== active) return;
+    const path = line.split("→").pop()?.trim() ?? "";
+    // dedup on the unique file path so remounts don't re-insert the same memo
+    if (path && unescMd(mdRef.current).includes(path)) return;
+    const text = line.replace(/^-\s*/, ""); // "🎤 sync memo … → /path"
+    // insert a real bullet-list NODE — an HTML string would be escaped to literal
+    // "<ul>…" text under Markdown(html:false), corrupting the note
+    editor.commands.insertContentAt(editor.state.doc.content.size, {
+      type: "bulletList",
+      content: [{ type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text }] }] }],
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appendReq, editor]);
 
-  // commit an edit + queue the caret position
-  const applyEdit = (value: string, selStart: number, selEnd: number) => {
-    setText(value);
-    onSaveBody(active, value);
-    pendingCaret.current = [selStart, selEnd];
-  };
-
-  // Raycast-Notes-style editor keys: ⌘B bold, ⌘⇧B highlight, Enter continues - lists
-  const onEditorKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    const el = e.currentTarget;
-    const { selectionStart: s, selectionEnd: en, value } = el;
-
-    if (e.key === "Escape") {
-      el.blur();
-      return;
-    }
-
-    // ⌘B bold (**), ⌘⇧B highlight (==)
-    if ((e.metaKey || e.ctrlKey) && (e.key === "b" || e.key === "B")) {
-      e.preventDefault();
-      const mark = e.shiftKey ? "==" : "**";
-      const sel = value.slice(s, en);
-      if (sel) {
-        applyEdit(value.slice(0, s) + mark + sel + mark + value.slice(en), s + mark.length, en + mark.length);
-      } else {
-        const at = s + mark.length;
-        applyEdit(value.slice(0, s) + mark + mark + value.slice(en), at, at);
-      }
-      return;
-    }
-
-    // Enter continues "- " and "- [ ]" lists (and exits on an empty item)
-    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && s === en) {
-      const lineStart = value.lastIndexOf("\n", s - 1) + 1;
-      const line = value.slice(lineStart, s);
-      const todo = line.match(/^(\s*)- \[[ xX]\] (.*)$/);
-      const bullet = line.match(/^(\s*)- (.*)$/);
-      let prefix: string | null = null;
-      let empty = false;
-      if (todo) {
-        prefix = `${todo[1]}- [ ] `;
-        empty = todo[2].trim() === "";
-      } else if (bullet) {
-        prefix = `${bullet[1]}- `;
-        empty = bullet[2].trim() === "";
-      }
-      if (prefix) {
-        e.preventDefault();
-        if (empty) {
-          // empty marker → drop it, exit the list
-          applyEdit(value.slice(0, lineStart) + value.slice(en), lineStart, lineStart);
-        } else {
-          const ins = "\n" + prefix;
-          applyEdit(value.slice(0, s) + ins + value.slice(en), s + ins.length, s + ins.length);
-        }
-      }
-    }
-  };
+  // memo lines → playable chips. Tolerant of both clean "- 🎤 … → /path" and
+  // legacy escaped "<ul><li>🎤 … → /path</li></ul>" lines from the old bug.
+  const memos = unescMd(md)
+    .split("\n")
+    .filter((l) => l.includes("🎤") && l.includes("→"))
+    .map((l) => {
+      const path = (l.split("→").pop() ?? "").replace(/<\/li>.*$/, "").trim();
+      const label = (l.split("→")[0].match(/🎤(.*)$/)?.[1] ?? "")
+        .replace(/<[^>]*>/g, "")
+        .replace(/^\s*sync memo\s*/, "")
+        .trim();
+      return { label, path };
+    })
+    .filter((m) => m.path)
+    .reverse(); // newest first
 
   // focus the editor, cursor at end — "ready to write"
   useEffect(() => {
-    if (editNonce > 0 && taRef.current) {
-      const el = taRef.current;
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-    }
-  }, [editNonce]);
+    if (editNonce > 0 && editor) editor.commands.focus("end");
+  }, [editNonce, editor]);
 
   // open straight into naming a new project
   useEffect(() => {
@@ -843,10 +1431,10 @@ function NotesPanel({
 
   return (
     <div className="notes" data-tauri-drag-region="false">
-      {/* nav row: arrows pinned to the edges, title centered + truncating (never shifts) */}
-      <div className="notes-nav">
+      {/* header: ‹ title › + compact icon toolbar */}
+      <div className="notes-head">
         <button className="navbtn" onClick={onPrev} disabled={!multi || creating} title="prev project">
-          ‹
+          <Icon name="angleLeft" size={13} />
         </button>
         {creating ? (
           <input
@@ -868,76 +1456,122 @@ function NotesPanel({
           <span className="notes-title">{active || "no projects"}</span>
         )}
         <button className="navbtn" onClick={onNext} disabled={!multi || creating} title="next project">
-          ›
+          <Icon name="angleRight" size={13} />
         </button>
-      </div>
 
-      {/* action row */}
-      <div className="notes-actions">
         {creating ? (
           <>
-            <button className="actbtn primary" onClick={submitCreate} disabled={!name.trim()}>
-              create
+            <button className="iconbtn primary" onClick={submitCreate} disabled={!name.trim()} title="create">
+              <Icon name="plus" size={14} />
             </button>
-            <button className="actbtn" onClick={() => { setCreating(false); setName(""); }}>
-              cancel
+            <button className="iconbtn" onClick={() => { setCreating(false); setName(""); }} title="cancel">
+              <Icon name="times" size={14} />
             </button>
           </>
         ) : (
           <>
-            <button className="actbtn" onClick={startCreate} title="new project">
-              + new
+            <button className="iconbtn" onClick={startCreate} title="new project">
+              <Icon name="plus" size={14} />
             </button>
-            <button
-              className={`actbtn ${confirmDel ? "danger" : ""}`}
-              disabled={!active}
-              title="delete this project"
-              onClick={() => {
-                if (confirmDel) {
-                  onDelete(active);
-                  setConfirmDel(false);
-                } else {
-                  setConfirmDel(true);
-                  setTimeout(() => setConfirmDel(false), 2500);
-                }
-              }}
-            >
-              {confirmDel ? "sure?" : "del"}
-            </button>
-            <button
-              className="actbtn"
-              onClick={() => navigator.clipboard.writeText(text).catch(() => {})}
-              disabled={!text.trim()}
-            >
-              copy
-            </button>
+            {/* less-daily actions tucked behind a hamburger → more room for the title */}
+            <div className="menuwrap">
+              <button
+                className={`iconbtn ${menuOpen ? "on" : ""}`}
+                onClick={() => setMenuOpen((v) => !v)}
+                title="more"
+              >
+                <Icon name="bars" size={14} />
+              </button>
+              {menuOpen && (
+                <>
+                  <div className="menu-scrim" onClick={() => setMenuOpen(false)} />
+                  <div className="menu">
+                    {/* work-session length stepper */}
+                    <div className="menu-stepper">
+                      <Icon name="clock" size={13} />
+                      <span className="menu-stepper-lbl">Cycle</span>
+                      <button
+                        className="stepbtn"
+                        onClick={() => onSetWorkMin(workMin - 5)}
+                        disabled={workMin <= 5}
+                      >
+                        −
+                      </button>
+                      <span className="menu-stepper-val">{workMin}m</span>
+                      <button
+                        className="stepbtn"
+                        onClick={() => onSetWorkMin(workMin + 5)}
+                        disabled={workMin >= 90}
+                      >
+                        +
+                      </button>
+                    </div>
+                    <div className="menu-sep" />
+                    <button
+                      className="menu-item"
+                      disabled={!md.trim()}
+                      onClick={() => {
+                        navigator.clipboard.writeText(md).catch(() => {});
+                        setMenuOpen(false);
+                      }}
+                    >
+                      <Icon name="copy" size={13} /> Copy note
+                    </button>
+                    <button
+                      className="menu-item"
+                      onClick={() => {
+                        onHelp();
+                        setMenuOpen(false);
+                      }}
+                    >
+                      <Icon name="sun" size={13} /> Shortcuts
+                    </button>
+                    <button
+                      className={`menu-item danger ${confirmDel ? "armed" : ""}`}
+                      disabled={!active}
+                      onClick={() => {
+                        if (confirmDel) {
+                          onDelete(active);
+                          setConfirmDel(false);
+                          setMenuOpen(false);
+                        } else {
+                          setConfirmDel(true);
+                          setTimeout(() => setConfirmDel(false), 2500);
+                        }
+                      }}
+                    >
+                      <Icon name="trash" size={13} /> {confirmDel ? "Sure? delete" : "Delete project"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </>
         )}
       </div>
 
+      {/* voice memos referenced in this note — tap to play/stop (afplay) */}
+      {memos.length > 0 && (
+        <div className="memos">
+          {memos.map((mm) => (
+            <button
+              key={mm.path}
+              className={`memochip ${playing === mm.path ? "playing" : ""}`}
+              onClick={() => onTogglePlay(mm.path)}
+              title={mm.path}
+            >
+              <span className={playing === mm.path ? "sq" : "tri"} /> {mm.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {list.length === 0 ? (
         <div className="notes-empty">no projects — hit “+ new”</div>
       ) : (
-        <textarea
-          ref={taRef}
-          className="notes-edit"
-          spellCheck={false}
-          placeholder={"- [ ] write a todo\n- [x] done\n\n# heading\nplain lines too"}
-          value={text}
-          onChange={(e) => {
-            setText(e.target.value);
-            onSaveBody(active, e.target.value);
-          }}
-          onFocus={() => {
-            focusedRef.current = true;
-            onEditingChange(true);
-          }}
-          onBlur={() => {
-            focusedRef.current = false;
-            onEditingChange(false);
-          }}
-          onKeyDown={onEditorKey}
-        />
+        <div className="notes-edit" onClick={() => editor?.commands.focus()}>
+          <EditorContent editor={editor} />
+        </div>
       )}
     </div>
   );

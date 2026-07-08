@@ -75,6 +75,197 @@ fn notify(label: String, dur: u32) {
         .spawn();
 }
 
+/// Persist a sync-mode voice memo (base64 audio from the webview's MediaRecorder)
+/// to ~/.pomo/memos/YYYY-MM-DD_HHMMSS.<ext>. Returns the absolute path written.
+#[tauri::command]
+fn save_memo(data_b64: String, ext: String) -> Result<String, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let bytes = STANDARD.decode(data_b64).map_err(|e| e.to_string())?;
+    if bytes.is_empty() {
+        return Err("empty recording".into());
+    }
+    let dir = pomo_dir().join("memos");
+    create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let safe_ext: String = ext.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let ts = Local::now().format("%Y-%m-%d_%H%M%S").to_string();
+    let file = dir.join(format!("{ts}.{safe_ext}"));
+    std::fs::write(&file, bytes).map_err(|e| e.to_string())?;
+    Ok(file.to_string_lossy().into_owned())
+}
+
+/// The notch-peek announcement keeps the notification's Glass sound, minus the banner.
+#[tauri::command]
+fn ding() {
+    let _ = std::process::Command::new("afplay")
+        .arg("/System/Library/Sounds/Glass.aiff")
+        .spawn();
+}
+
+// ── notch mode: dock the widget under the MacBook notch, Dynamic Island style ──
+// AppKit only lets a window sit in the menu-bar band when its level is above
+// NSMainMenuWindowLevel; Tauri doesn't expose levels, so we talk to NSWindow raw.
+#[cfg(target_os = "macos")]
+unsafe fn notch_dock_impl(window: &tauri::WebviewWindow, w: f64, h: f64, float: bool) -> Result<f64, String> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSScreen, NSWindow, NSWindowCollectionBehavior};
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    let mtm = MainThreadMarker::new().ok_or("not on main thread")?;
+    let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
+    let ns: &NSWindow = &*ptr;
+
+    if float {
+        // back to the normal floating widget (NSFloatingWindowLevel = 3)
+        ns.setLevel(3);
+        ns.setCollectionBehavior(NSWindowCollectionBehavior::Default);
+        return Ok(0.0);
+    }
+
+    // prefer the notched display; fall back to the main screen
+    let mut target = NSScreen::mainScreen(mtm).ok_or("no screen")?;
+    let mut notch = 0.0f64;
+    for s in NSScreen::screens(mtm).iter() {
+        let t = s.safeAreaInsets().top;
+        if t > notch {
+            notch = t;
+            target = s;
+        }
+    }
+    let strip = if notch > 0.0 { notch } else { 24.0 }; // no notch → menu-bar height
+    let h = if h <= 0.0 { strip } else { h }; // h=0 → collapsed to just the strip
+
+    let f = target.frame(); // global coords, origin bottom-left
+    // cold launch: NSScreen can report a degenerate frame before it's ready —
+    // bail so the frontend retries instead of docking the window off-screen
+    if f.size.width < 200.0 || f.size.height < 200.0 {
+        return Err("screen not ready".into());
+    }
+
+    // ScreenSaver level (1000) sits above fullscreen apps' windows; the lower
+    // menu-bar level got covered when another app went fullscreen. Combined with
+    // CanJoinAllSpaces + FullScreenAuxiliary the widget rides onto every Space.
+    ns.setLevel(1000);
+    ns.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::Stationary,
+    );
+    let x = f.origin.x + (f.size.width - w) / 2.0;
+    let y = f.origin.y + f.size.height - h;
+    ns.setFrame_display(NSRect::new(NSPoint::new(x, y), NSSize::new(w, h)), true);
+    Ok(strip)
+}
+
+/// Is the global mouse pointer inside a window-local rect right now?
+/// (x, y from the window's TOP-LEFT, logical points; w<=0 → whole frame.)
+/// DOM hover events don't fire while another app is focused, so the frontend
+/// polls this native hit test instead — hover works system-wide.
+#[tauri::command]
+fn mouse_over(window: tauri::WebviewWindow, x: f64, y: f64, w: f64, h: f64) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let win = window.clone();
+        window
+            .run_on_main_thread(move || {
+                let res = (|| -> Result<bool, String> {
+                    unsafe {
+                        use objc2_app_kit::{NSEvent, NSWindow};
+                        let ptr = win.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
+                        let ns: &NSWindow = &*ptr;
+                        let f = ns.frame(); // global, bottom-left origin
+                        let (rx0, ry0, rw, rh) = if w > 0.0 {
+                            // window-local top-left rect → global bottom-left rect
+                            (f.origin.x + x, f.origin.y + f.size.height - (y + h), w, h)
+                        } else {
+                            (f.origin.x, f.origin.y, f.size.width, f.size.height)
+                        };
+                        let p = NSEvent::mouseLocation();
+                        Ok(p.x >= rx0 && p.x <= rx0 + rw && p.y >= ry0 && p.y <= ry0 + rh)
+                    }
+                })();
+                let _ = tx.send(res);
+            })
+            .map_err(|e| e.to_string())?;
+        rx.recv().map_err(|e| e.to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, x, y, w, h);
+        Ok(false)
+    }
+}
+
+/// Dock top-center on the notched screen (float=true restores normal mode).
+/// Returns the notch height so the frontend can offset the card below it.
+#[tauri::command]
+fn notch_dock(window: tauri::WebviewWindow, w: f64, h: f64, float: bool) -> Result<f64, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let win = window.clone();
+        window
+            .run_on_main_thread(move || {
+                let _ = tx.send(unsafe { notch_dock_impl(&win, w, h, float) });
+            })
+            .map_err(|e| e.to_string())?;
+        rx.recv().map_err(|e| e.to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, w, h, float);
+        Ok(0.0)
+    }
+}
+
+// ── memo playback: native afplay, one at a time ──────────
+static PLAYER: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+
+fn kill_player(guard: &mut Option<std::process::Child>) {
+    if let Some(mut c) = guard.take() {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+}
+
+/// Play a memo file through afplay (kills any current playback first).
+/// Paths are pinned to ~/.pomo/memos — the note text is user-editable.
+#[tauri::command]
+fn memo_play(path: String) -> Result<(), String> {
+    let canon = PathBuf::from(&path).canonicalize().map_err(|e| e.to_string())?;
+    let memos = pomo_dir().join("memos").canonicalize().map_err(|e| e.to_string())?;
+    if !canon.starts_with(&memos) {
+        return Err("not a memo file".into());
+    }
+    let mut guard = PLAYER.lock().unwrap();
+    kill_player(&mut guard);
+    let child = std::process::Command::new("afplay")
+        .arg(canon)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    *guard = Some(child);
+    Ok(())
+}
+
+#[tauri::command]
+fn memo_stop() {
+    kill_player(&mut PLAYER.lock().unwrap());
+}
+
+/// True while afplay is still running — the frontend polls to reset the ▶ chip.
+#[tauri::command]
+fn memo_playing() -> bool {
+    let mut guard = PLAYER.lock().unwrap();
+    match guard.as_mut().map(|c| c.try_wait()) {
+        Some(Ok(None)) => true, // still going
+        Some(_) => {
+            *guard = None; // finished or errored
+            false
+        }
+        None => false,
+    }
+}
+
 // ── shared notes/todo store (~/.pomo/notes/<project>.md) — the bridge to Raycast ──
 fn notes_dir() -> PathBuf {
     pomo_dir().join("notes")
@@ -181,18 +372,66 @@ fn consume_open_request() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use tauri::{Emitter, Manager};
+    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+
+    // ⌃⌥ combos so the widget is controllable while any app is focused (a passive
+    // notch widget can't hold key focus for bare keys). name → action for the UI.
+    let keys: [(Modifiers, Code, &str); 6] = [
+        (Modifiers::CONTROL.union(Modifiers::ALT), Code::KeyS, "sync"),
+        (Modifiers::CONTROL.union(Modifiers::ALT), Code::KeyP, "pause"),
+        (Modifiers::CONTROL.union(Modifiers::ALT), Code::KeyM, "memo"),
+        (Modifiers::CONTROL.union(Modifiers::ALT), Code::KeyN, "notch"),
+        (Modifiers::CONTROL.union(Modifiers::ALT), Code::Enter, "skip"),
+        (Modifiers::CONTROL.union(Modifiers::ALT), Code::KeyK, "peek"),
+    ];
+    let shortcuts: Vec<Shortcut> = keys.iter().map(|(m, c, _)| Shortcut::new(Some(*m), *c)).collect();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .setup(|_app| {
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |app, sc, ev| {
+                    if ev.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    if let Some((_, _, name)) = keys.iter().find(|(m, c, _)| {
+                        sc.mods == *m && sc.key == *c
+                    }) {
+                        let _ = app.emit("hotkey", *name);
+                    }
+                })
+                .build(),
+        )
+        .setup(move |app| {
             // Run as a menubar/widget-style accessory: no Dock icon, no menu bar,
             // hidden from cmd-tab.
             #[cfg(target_os = "macos")]
-            _app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            // register the global hotkeys (ignore failures — e.g. already taken)
+            use tauri_plugin_global_shortcut::GlobalShortcutExt;
+            for s in &shortcuts {
+                let _ = app.global_shortcut().register(s.clone());
+            }
+
+            // cold-launch hardening: make sure the window is actually shown so the
+            // webview gets a render pass (first launch sometimes comes up blank)
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             log_event,
             notify,
+            save_memo,
+            memo_play,
+            memo_stop,
+            memo_playing,
+            notch_dock,
+            mouse_over,
+            ding,
             list_notes,
             read_note,
             write_note,

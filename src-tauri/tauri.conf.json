@@ -15,16 +15,16 @@
       {
         "label": "main",
         "title": "POMO",
-        "width": 300,
-        "height": 480,
+        "width": 200,
+        "height": 110,
         "resizable": false,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "shadow": false,
-        "x": 980,
-        "y": 60
+        "x": 760,
+        "y": 0
       }
     ],
     "security": {

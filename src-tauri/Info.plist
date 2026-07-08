@@ -6,5 +6,8 @@
          so there's no icon flash (the runtime Accessory policy is the belt-and-suspenders). -->
     <key>LSUIElement</key>
     <true/>
+    <!-- sync-mode voice memos record from the mic via the webview's MediaRecorder -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>pomo records voice memos during sync mode.</string>
 </dict>
 </plist>

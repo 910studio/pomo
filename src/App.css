@@ -1,12 +1,25 @@
+@font-face {
+  font-family: "Minecraft";
+  src: url("./assets/fonts/Minecraft.ttf") format("truetype");
+  font-display: block;
+}
+
 :root {
-  --pink: rgb(230, 80, 160);
-  --ink: rgb(10, 10, 10);
-  --paper: rgb(219, 214, 207);
-  --mint: rgb(115, 191, 153);
-  --amber: rgb(255, 183, 77);
-  --mid: rgb(82, 82, 91);
-  --err: rgb(185, 28, 28);
-  --ghost: rgb(153, 150, 144);
+  /* palette sampled from design/*.png */
+  --line: #000000; /* hard black border */
+  --ink: #2b221f; /* warm dark brown: panels, clock text */
+  --paper: #ddd6cb; /* frame + button cream */
+  --panel: #f8f6f4; /* notes surface (lighter) */
+  --panel2: #f0ede8; /* editor field */
+  --rust: #c24a30; /* record / active accent */
+  --stone: #6f6b66; /* muted */
+  --cream: #f2ede4; /* clock text on dark */
+
+  /* semantic tones */
+  --amber: #d98a2b;
+  --mint: #6f9f7c;
+  --err: #b91c1c;
+  --ghost: #a49f96;
 
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   -webkit-font-smoothing: antialiased;
@@ -21,7 +34,6 @@
   -webkit-user-select: none;
 }
 
-/* transparent window — only the card paints */
 html,
 body,
 #root {
@@ -31,392 +43,818 @@ body,
   overflow: hidden;
 }
 
-.widget {
-  width: 100%;
-  height: 100%;
+/* ── wrappers ─────────────────────────────────────────── */
+.floatwrap {
+  display: contents;
+}
+.notchwrap {
+  width: 100vw;
+  height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+/* ── MORPH: the container that stretches between pill ⇄ card ── */
+.morph {
+  position: relative;
+  width: var(--mini-w);
+  height: var(--mini-h);
+  background: var(--paper);
+  border: 3px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  /* Apple dynamic-island feel: strong smooth decelerate, no bounce on the border */
+  --morph-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    width 0.34s var(--morph-ease),
+    height 0.34s var(--morph-ease),
+    border-radius 0.34s var(--morph-ease);
+  /* force a compositing layer → fewer transparent-window resize artifacts */
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+.morph.open {
+  width: var(--card-w);
+  height: var(--card-h);
+  border-radius: 20px;
+}
+.morph.flash {
+  animation: pop 0.35s steps(1) 0s 4;
+}
+/* two layers, each a FIXED size centered at the top so they never reflow.
+   They don't just get revealed — they scale + fade so the content grows out of
+   the notch and settles into place (the "dynamic" part). */
+.morph-pill,
+.morph-card {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  display: flex;
+  transform-origin: top center;
+  will-change: transform, opacity;
+}
+.morph-pill {
+  width: calc(var(--mini-w) - 6px);
+  height: calc(var(--mini-h) - 6px);
+  opacity: 1;
+  transform: translateX(-50%) scale(1);
+  transition:
+    opacity 0.16s ease,
+    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.morph.open .morph-pill {
+  opacity: 0;
+  transform: translateX(-50%) scale(1.25); /* dissolve outward into the card */
+  pointer-events: none;
+}
+.morph-card {
+  width: calc(var(--card-w) - 6px);
+  height: calc(var(--card-h) - 6px);
+  opacity: 0;
+  transform: translateX(-50%) scale(0.86); /* grows up out of the notch */
+  pointer-events: none;
+  transition:
+    opacity 0.22s ease,
+    transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.morph.open .morph-card {
+  opacity: 1;
+  transform: translateX(-50%) scale(1);
+  pointer-events: auto;
+}
+
+.pill-clock {
+  flex: 1.25;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ink);
+  color: var(--cream);
+  font-family: "Minecraft", monospace;
+  font-size: 30px;
+  line-height: 1;
+  letter-spacing: 1px;
+  /* explicit concentric radius (16 outer − 3 border) — WKWebView won't clip
+     a child background reliably via the parent's overflow:hidden */
+  border-radius: 13px 0 0 13px;
+}
+/* Minecraft.ttf reserves 25% descent digits never use → they flex-center ~9%
+   high. Nudge the glyph span down to true optical center. */
+.clockglyph {
+  display: inline-block;
+  transform: translateY(0.09em);
+}
+.pill-colon {
+  margin: 0 1px;
+  animation: blink 1s steps(1) infinite;
+}
+.pill-side {
+  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
-  padding: 10px 18px 16px;
-  background: var(--paper);
-  border: 3px solid var(--ink);
-  border-radius: 18px;
-  /* GrayUI cartoon shadow: hard offset, zero blur */
-  box-shadow: 6px 6px 0 var(--ink);
-  transition: box-shadow 0.12s, transform 0.12s;
+  justify-content: center;
+  gap: 5px;
+  padding: 4px 6px;
+  min-width: 0;
+}
+.pill-wave {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+}
+.pill-wave .wavecv {
+  width: 100%;
+  height: 22px;
+}
+.pill-rectime {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--rust);
+  font-variant-numeric: tabular-nums;
+  animation: recblink 1.2s steps(2, start) infinite;
 }
 
-.widget.flash {
+/* ── EXPANDED card (float-mode window) ────────────────── */
+.card {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  background: var(--paper);
+  border: 3px solid var(--line);
+  border-radius: 20px;
+  overflow: hidden;
+  position: relative;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+.card.flash {
   animation: pop 0.35s steps(1) 0s 4;
 }
 @keyframes pop {
-  0% {
-    box-shadow: 6px 6px 0 var(--pink);
-  }
   50% {
-    box-shadow: 6px 6px 0 var(--mint);
+    background: var(--rust);
   }
 }
 
-/* drag bar */
-.bar {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  cursor: grab;
-}
-.bar:active {
-  cursor: grabbing;
-}
-.brand {
-  font-weight: 800;
-  letter-spacing: 3px;
-  font-size: 13px;
-}
-.x {
-  border: 2px solid var(--ink);
-  background: var(--paper);
-  border-radius: 8px;
-  width: 22px;
-  height: 22px;
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-  box-shadow: 2px 2px 0 var(--ink);
-}
-.x:active {
-  transform: translate(2px, 2px);
-  box-shadow: none;
-}
-
-/* phase tag + cycle dots */
-.phase {
+/* left column: dark clock panel + controls */
+.card-l {
+  width: 190px;
+  flex: 0 0 190px;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 8px;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 17px 0 0 17px; /* concentric with card (20 − 3 border) */
 }
-.tag {
-  font-weight: 800;
-  font-size: 12px;
-  letter-spacing: 2px;
-  padding: 3px 10px;
-  border: 2px solid var(--ink);
-  border-radius: 20px;
-  box-shadow: 2px 2px 0 var(--ink);
-  background: var(--paper);
-}
-.tag-ink {
-  background: var(--paper);
-}
-.tag-mid {
-  background: var(--ghost);
-  color: var(--paper);
-}
-.tag-err {
-  background: var(--err);
-  color: var(--paper);
-}
-.tag-mint {
-  background: var(--mint);
-}
-.tag-amber {
-  background: var(--amber);
-}
-
-.dots {
+.panel {
+  position: relative;
+  flex: 1;
   display: flex;
-  gap: 7px;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center; /* center clock + status horizontally */
+  gap: 8px;
+  background: var(--ink);
+  border: 3px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  overflow: hidden;
 }
-.dot {
-  width: 9px;
-  height: 9px;
-  border: 2px solid var(--ink);
-  border-radius: 50%;
-  background: var(--paper);
+/* weather readout — pinned top-right so it never shifts the centered clock */
+.panel-weather {
+  position: absolute;
+  top: 7px;
+  right: 9px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-family: "Minecraft", monospace;
+  font-size: 12px;
+  color: var(--cream);
+  opacity: 0.85;
 }
-.dot.on {
-  background: var(--pink);
-}
-
-/* big time */
-.time {
-  font-size: 58px;
-  font-weight: 800;
+.panel-time {
+  font-family: "Minecraft", monospace;
+  font-size: 46px;
   line-height: 1;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -2px;
+  letter-spacing: 1px;
+  color: var(--cream);
+  text-align: center;
 }
-.time-ink {
-  color: var(--ink);
+.panel-colon {
+  margin: 0 2px;
 }
-.time-mid {
-  color: var(--mid);
-}
-.time-err {
-  color: var(--err);
-}
-.time-mint {
-  color: var(--mint);
+.panel-time.is-paused .panel-colon {
+  animation: blink 1s steps(1) infinite;
 }
 .time-amber {
   color: var(--amber);
 }
-
-.colon {
-  animation: blink 1s steps(1) infinite;
+.time-mint {
+  color: var(--mint);
 }
-.is-paused .colon {
-  animation: none;
-  opacity: 0.35;
+.time-err {
+  color: #e57373;
 }
-@keyframes blink {
-  50% {
-    opacity: 0.2;
-  }
+.panel-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
-
-/* progress */
-.track {
+.panel-wave {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.panel-wave .wavecv {
   width: 100%;
-  height: 12px;
-  border: 2px solid var(--ink);
-  border-radius: 20px;
-  background: var(--paper);
-  overflow: hidden;
+  height: 30px;
 }
-.fill {
-  height: 100%;
-  background: var(--ink);
-  transition: width 0.3s linear;
+.synchint {
+  font-size: 10px;
+  color: var(--amber);
+  letter-spacing: 0.5px;
+  white-space: nowrap;
 }
-.fill-err {
-  background: var(--err);
+.panel-status {
+  flex-wrap: wrap;
 }
-.fill-mid {
-  background: var(--mid);
-}
-.fill-mint {
-  background: var(--mint);
+.rectime {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--rust);
+  font-variant-numeric: tabular-nums;
+  animation: recblink 1.2s steps(2, start) infinite;
 }
 
-.syncline {
-  font-size: 11px;
-  color: var(--amber);
-  font-weight: 700;
+/* phase tag (pixel font) */
+.ptag {
+  font-family: "Minecraft", monospace;
+  font-size: 13px;
   letter-spacing: 1px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  white-space: nowrap;
+}
+.tag-amber {
+  background: var(--amber);
+  color: var(--ink);
+}
+.tag-mint {
+  background: var(--mint);
+  color: var(--ink);
+}
+.tag-err {
+  background: var(--err);
+  color: var(--cream);
+}
+.tag-mid {
+  background: var(--stone);
+  color: var(--cream);
+}
+
+/* set-position dots */
+.pdots {
+  display: flex;
+  gap: 4px;
+}
+.pdot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--cream);
+  opacity: 0.5;
+}
+.pdot.on {
+  background: var(--cream);
+  opacity: 1;
+}
+.pill-side .pdot {
+  border-color: var(--ink);
+}
+.pill-side .pdot.on {
+  background: var(--ink);
+}
+/* record blip */
+.prec {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--rust);
+  animation: recblink 1.2s steps(2, start) infinite;
 }
 
 /* controls */
-.controls {
+.ctl {
   display: flex;
   gap: 8px;
-  width: 100%;
+  flex-wrap: nowrap;
 }
-.btn {
-  flex: 1;
-  font-family: inherit;
-  font-weight: 700;
-  font-size: 12px;
-  padding: 8px 0;
-  border: 2px solid var(--ink);
+.cbtn {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 3px solid var(--line);
   border-radius: 10px;
   background: var(--paper);
   color: var(--ink);
   cursor: pointer;
-  box-shadow: 3px 3px 0 var(--ink);
-  transition: transform 0.08s, box-shadow 0.08s;
+  box-shadow: 2px 2px 0 var(--line);
+  transition: transform 0.16s cubic-bezier(0.34, 1.4, 0.5, 1), box-shadow 0.16s cubic-bezier(0.34, 1.4, 0.5, 1);
 }
-.btn:hover:not(:disabled) {
-  transform: translate(-1px, -1px);
-  box-shadow: 4px 4px 0 var(--ink);
+.cbtn:hover:not(:disabled) {
+  transform: translate(-2px, -2px);
+  box-shadow: 5px 5px 0 var(--line);
 }
-.btn:active:not(:disabled) {
-  transform: translate(3px, 3px);
+.cbtn:active:not(:disabled) {
+  transform: translate(2px, 2px);
   box-shadow: none;
+  transition: transform 0.05s, box-shadow 0.05s;
 }
-.btn:disabled {
-  opacity: 0.4;
+.cbtn:disabled {
+  opacity: 0.35;
   cursor: default;
   box-shadow: none;
 }
-.btn.primary {
-  background: var(--pink);
-  color: var(--paper);
-}
-.btn.active {
+.cbtn.active {
   background: var(--amber);
 }
-
-.hint {
-  font-size: 10px;
-  color: var(--ghost);
-  letter-spacing: 0.5px;
+.cbtn.rec {
+  background: var(--rust);
+}
+/* record dot / stop square inside the memo button */
+.cbtn .dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--rust);
+}
+.cbtn.rec .dot,
+.cbtn .sq {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--cream);
 }
 
-/* bottom zone: holds either the creature or the notes panel */
-.bottom {
+/* right column: notes */
+.card-r {
   flex: 1;
-  min-height: 150px;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
-
-/* the ASCII creature — random per phase, scaled to fit */
-.mascot {
-  margin: 0;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  white-space: pre;
-  letter-spacing: 0;
-  text-align: center;
-}
-
-/* notes / todo panel (hover) */
-.notes {
-  width: 100%;
-  height: 100%;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  text-align: left;
+  background: var(--panel);
+  border-left: 3px solid var(--line);
+  border-radius: 0 17px 17px 0; /* concentric with card */
+}
+.notes {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
 }
 
-/* nav row: arrows locked to the edges, title centered + truncating — never shifts */
-.notes-nav {
+/* header: nav arrows + title + icon toolbar — one row, never wraps */
+.notes-head {
   display: flex;
   align-items: center;
-  width: 100%;
-  gap: 8px;
-}
-.navbtn {
-  font-family: inherit;
-  font-weight: 800;
-  font-size: 18px;
-  line-height: 1;
-  width: 30px;
-  height: 30px;
-  flex-shrink: 0;
-  border: 2px solid var(--ink);
-  border-radius: 8px;
-  background: var(--paper);
-  cursor: pointer;
-  box-shadow: 3px 3px 0 var(--ink);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-}
-.navbtn:active:not(:disabled) {
-  transform: translate(3px, 3px);
-  box-shadow: none;
-}
-.navbtn:disabled {
-  opacity: 0.3;
-  cursor: default;
-  box-shadow: none;
+  gap: 4px;
+  flex-wrap: nowrap;
 }
 .notes-title {
   flex: 1;
   min-width: 0;
   text-align: center;
+  font-family: "Minecraft", monospace;
   font-size: 14px;
-  font-weight: 800;
-  letter-spacing: 1px;
-  color: var(--ink);
+  line-height: 1;
+  letter-spacing: 0.5px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Minecraft.ttf descent → text flex-centers high; nudge to optical center */
+  transform: translateY(0.09em);
 }
 .notes-input {
   flex: 1;
   min-width: 0;
-  text-align: center;
-  font-family: inherit;
-  font-size: 14px;
-  font-weight: 700;
+  font-family: "Minecraft", monospace;
+  font-size: 13px;
+  border: 2px solid var(--line);
+  border-radius: 7px;
+  padding: 3px 7px;
+  background: var(--panel2);
   color: var(--ink);
-  background: var(--paper);
-  border: 2px solid var(--pink);
-  border-radius: 8px;
-  padding: 3px 6px;
   outline: none;
 }
-
-/* action row */
-.notes-actions {
+.navbtn,
+.iconbtn {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.actbtn {
-  font-family: inherit;
-  font-weight: 700;
-  font-size: 12px;
-  padding: 5px 12px;
-  border: 2px solid var(--ink);
+  justify-content: center;
+  border: 2px solid var(--line);
   border-radius: 8px;
   background: var(--paper);
   color: var(--ink);
   cursor: pointer;
-  box-shadow: 3px 3px 0 var(--ink);
+  box-shadow: 2px 2px 0 var(--line);
+  transition: transform 0.16s cubic-bezier(0.34, 1.4, 0.5, 1), box-shadow 0.16s cubic-bezier(0.34, 1.4, 0.5, 1);
 }
-.actbtn:active:not(:disabled) {
-  transform: translate(3px, 3px);
+.navbtn:hover:not(:disabled),
+.iconbtn:hover:not(:disabled) {
+  transform: translate(-1.5px, -1.5px);
+  box-shadow: 3.5px 3.5px 0 var(--line);
+}
+.navbtn:active:not(:disabled),
+.iconbtn:active:not(:disabled) {
+  transform: translate(2px, 2px);
   box-shadow: none;
+  transition: transform 0.05s, box-shadow 0.05s;
 }
-.actbtn:disabled {
-  opacity: 0.4;
+.navbtn:disabled,
+.iconbtn:disabled {
+  opacity: 0.3;
   cursor: default;
   box-shadow: none;
 }
-.actbtn.primary {
-  background: var(--pink);
-  color: var(--paper);
+.iconbtn.primary {
+  background: var(--mint);
 }
-.actbtn.danger {
-  background: var(--err);
-  color: var(--paper);
+.iconbtn.on {
+  background: var(--amber);
 }
-.notes-count {
-  font-size: 11px;
-  color: var(--ghost);
-  letter-spacing: 1px;
+.iconbtn.sun {
+  color: var(--rust);
 }
-/* editable markdown — the actual note editor */
-.notes-edit {
-  flex: 1;
-  width: 100%;
-  resize: none;
-  border: 2px solid var(--ink);
+
+/* hamburger dropdown */
+.menuwrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+.menu-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+}
+.menu {
+  position: absolute;
+  top: 32px;
+  right: 0;
+  z-index: 21;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px;
+  min-width: 178px;
+  background: var(--paper);
+  border: 3px solid var(--line);
   border-radius: 10px;
+  box-shadow: 3px 4px 0 var(--line);
+  animation: menupop 0.14s cubic-bezier(0.34, 1.4, 0.5, 1);
+  transform-origin: top right;
+}
+@keyframes menupop {
+  from {
+    opacity: 0;
+    transform: scale(0.9) translateY(-4px);
+  }
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+.menu-item:hover:not(:disabled) {
+  background: var(--panel2);
+}
+.menu-item:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.menu-item.danger {
+  color: var(--err);
+}
+.menu-item.danger.armed {
+  background: var(--err);
+  color: var(--cream);
+}
+.menu-sep {
+  height: 2px;
+  background: var(--line);
+  opacity: 0.15;
+  margin: 2px 4px;
+}
+/* cycle-minutes stepper */
+.menu-stepper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.menu-stepper-lbl {
+  flex: 1;
+}
+.menu-stepper-val {
+  min-width: 34px;
+  text-align: center;
+  font-family: "Minecraft", monospace;
+  font-size: 13px;
+}
+.stepbtn {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--line);
+  border-radius: 6px;
   background: var(--paper);
   color: var(--ink);
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 14px;
-  line-height: 1.5;
-  padding: 8px 10px;
-  outline: none;
-  user-select: text;
-  -webkit-user-select: text;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 1.5px 1.5px 0 var(--line);
+  transition: transform 0.12s cubic-bezier(0.34, 1.4, 0.5, 1), box-shadow 0.12s cubic-bezier(0.34, 1.4, 0.5, 1);
 }
-.notes-edit:focus {
-  border-color: var(--pink);
+.stepbtn:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 2.5px 2.5px 0 var(--line);
 }
-.notes-edit::placeholder {
-  color: var(--ghost);
+.stepbtn:active:not(:disabled) {
+  transform: translate(1.5px, 1.5px);
+  box-shadow: none;
+}
+.stepbtn:disabled {
+  opacity: 0.3;
+  cursor: default;
+  box-shadow: none;
+}
+
+/* voice memo chips */
+.memos {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  overflow-x: auto;
+  flex: 0 0 auto;
+  padding: 1px 1px 3px;
+  scrollbar-width: none;
+}
+.memos::-webkit-scrollbar {
+  display: none;
+}
+.memochip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 11px;
+  padding: 3px 9px;
+  border: 2px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  box-shadow: 1.5px 1.5px 0 var(--line);
+  white-space: nowrap;
+}
+.memochip:active {
+  transform: translate(1.5px, 1.5px);
+  box-shadow: none;
+}
+.memochip.playing {
+  background: var(--amber);
+}
+.memochip .tri {
+  width: 0;
+  height: 0;
+  border-left: 7px solid var(--ink);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+}
+.memochip .sq {
+  width: 8px;
+  height: 8px;
+  background: var(--ink);
+  border-radius: 1px;
+}
+
+/* editor field */
+.notes-edit {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 3px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel2);
+  overflow-y: auto;
+  cursor: text;
+}
+.notes-edit:focus-within {
+  border-color: var(--rust);
+}
+.notes-edit > div {
+  min-height: 100%;
 }
 .notes-empty {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--ghost);
   font-style: italic;
+}
+
+/* ── TipTap rich editor ───────────────────────────────── */
+.notes-rich {
+  min-height: 100%;
+  padding: 8px 10px;
+  outline: none;
+  color: var(--ink);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.notes-rich p {
+  margin: 0 0 4px;
+}
+.notes-rich h1,
+.notes-rich h2,
+.notes-rich h3 {
+  font-family: "Minecraft", monospace;
+  font-weight: 400;
+  color: var(--rust);
+  margin: 6px 0 4px;
+  letter-spacing: 0.5px;
+}
+.notes-rich h1 {
+  font-size: 20px;
+}
+.notes-rich h2 {
+  font-size: 16px;
+}
+.notes-rich h3 {
+  font-size: 14px;
+}
+.notes-rich ul,
+.notes-rich ol {
+  margin: 0 0 4px;
+  padding-left: 18px;
+}
+.notes-rich li > p {
+  margin: 0;
+}
+.notes-rich li > ul,
+.notes-rich li > ol {
+  margin: 0;
+}
+.notes-rich ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 2px;
+}
+.notes-rich ul[data-type="taskList"] li {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+.notes-rich ul[data-type="taskList"] li > label {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.notes-rich ul[data-type="taskList"] li > div {
+  flex: 1;
+  min-width: 0;
+}
+.notes-rich ul[data-type="taskList"] input[type="checkbox"] {
+  accent-color: var(--rust);
+  cursor: pointer;
+}
+.notes-rich li[data-checked="true"] > div {
+  color: var(--ghost);
+  text-decoration: line-through;
+}
+.notes-rich mark {
+  background: var(--amber);
+  border-radius: 3px;
+  padding: 0 1px;
+}
+.notes-rich code {
+  background: rgba(0, 0, 0, 0.07);
+  border-radius: 4px;
+  padding: 0 3px;
+}
+.notes-rich blockquote {
+  border-left: 3px solid var(--stone);
+  margin: 0 0 4px;
+  padding-left: 8px;
+  color: var(--stone);
+}
+.notes-rich hr {
+  border: none;
+  border-top: 2px solid var(--ink);
+  margin: 6px 0;
+}
+.notes-rich p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--ghost);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+/* ── cheat sheet overlay ──────────────────────────────── */
+.cheat {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  background: var(--paper);
+  padding: 14px 18px;
+  overflow-y: auto;
+  cursor: pointer;
+}
+.cheat-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 22px;
+}
+.cheat-sec {
+  font-family: "Minecraft", monospace;
+  font-size: 13px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--rust);
+  margin: 8px 0 4px;
+}
+.cheat-sec:first-child {
+  margin-top: 0;
+}
+.cheat-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 10px;
+  align-items: center;
+}
+.cheat-grid kbd {
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  border: 1.5px solid var(--line);
+  border-radius: 5px;
+  padding: 0 5px;
+  background: var(--paper);
+  box-shadow: 1.5px 1.5px 0 var(--line);
+  justify-self: start;
+  white-space: nowrap;
+}
+.cheat-grid span {
+  font-size: 11px;
+  color: var(--ink);
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+@keyframes recblink {
+  50% {
+    opacity: 0.5;
+  }
 }
