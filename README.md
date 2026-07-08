@@ -2,7 +2,7 @@
 
 A notch-native pomodoro widget for macOS. It lives **behind the MacBook notch** and drops out like a Dynamic Island when you hover — pixel-art timer, voice memos with a live spectrum, a real rich-text notepad per project, and glanceable weather. Built to stop you from doomscrolling and actually get your shit together.
 
-Native Tauri app (Rust + React) — ~9MB, sips battery, no Electron.
+Native Tauri app (Rust + React) — ~9MB, sips battery, no Electron. A [910studio](https://910.studio) joint.
 
 ```
         ▁▁▁▁▁▁▁▁▁         ← the notch
@@ -94,8 +94,14 @@ Everything lives in `~/.pomo/`, all plain files:
 
 ## Credits
 
-[Tauri](https://tauri.app) · [TipTap](https://tiptap.dev) · [Open-Meteo](https://open-meteo.com) + [ipwho.is](https://ipwho.is) for weather · the Minecraft typeface · a pixel FontAwesome-style icon set.
+Built by [**910studio**](https://910.studio) — a global creative web studio.
+
+Standing on: [Tauri](https://tauri.app) · [TipTap](https://tiptap.dev) · [Open-Meteo](https://open-meteo.com) + [ipwho.is](https://ipwho.is) for weather · the Minecraft typeface · a pixel FontAwesome-style icon set.
 
 ## License
 
 MIT — do whatever.
+
+---
+
+<sub>A [910studio](https://910.studio) joint · made in Ulaanbaatar 🇲🇳</sub>
