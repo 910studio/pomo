@@ -6,7 +6,19 @@ Native Tauri app (Rust + React) — ~9MB, sips battery, no Electron. A [910studi
 
 ### ⬇️ [Download the latest release](https://github.com/910studio/pomo/releases/latest)
 
-Grab the `.dmg`, drag `pomo.app` into `/Applications`. It's unsigned, so first launch needs a **right-click → Open** (see [Build the app](#build-the-app) for the one-liner). Or [build it yourself](#run-it).
+**One-line install** — downloads, installs, clears quarantine, and launches:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/910studio/pomo/main/install.sh | bash
+```
+
+**Or manually:** grab the `.dmg`, drag **pomo.app** into `/Applications`. It's **unsigned**, so macOS says it's *"damaged"* on first open — it isn't, that's just Gatekeeper flagging an unsigned download. Clear the quarantine flag once and it opens normally:
+
+```bash
+xattr -cr /Applications/pomo.app
+```
+
+Prefer to build from source? [Jump to Run it](#run-it).
 
 ```
         ▁▁▁▁▁▁▁▁▁         ← the notch
