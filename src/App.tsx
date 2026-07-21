@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize, LogicalPosition, currentMonitor } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -180,6 +180,11 @@ function App() {
   const [secs, setSecs] = useState(WORK); // remaining (countdown) or elapsed (sync)
   const [paused, setPaused] = useState(false);
   const [flash, setFlash] = useState(false);
+  const [intro, setIntro] = useState(true); // launch reveal: clock springs in + doodle burst draws once
+  useEffect(() => {
+    const t = setTimeout(() => setIntro(false), 2200);
+    return () => clearTimeout(t);
+  }, []);
   const [notesHover] = useState(false); // legacy hover flag (kept for key nav guard)
   const [notesPinned, setNotesPinned] = useState(false); // Cmd+P pinned open
   const [showCheat, setShowCheat] = useState(false); // "?" shortcut cheat sheet
@@ -255,7 +260,6 @@ function App() {
     if (notchModeRef.current) {
       peekUntil.current = Date.now() + 5000;
       setNotchOut(true);
-      invoke("ding").catch(() => {});
     } else {
       invoke("notify", { label, dur }).catch(() => {});
     }
@@ -1179,7 +1183,7 @@ function App() {
             <Icon name={phase !== "idle" && !paused ? "pause" : "play"} size={18} />
           </button>
           <button className="cbtn" onClick={skip} disabled={phase === "idle"} title={isSync ? "end (space)" : "skip (space)"}>
-            <Icon name="play" size={18} />
+            <Icon name="skipForward" size={18} />
           </button>
           <button
             className={`cbtn ${isSync ? "active" : ""}`}
@@ -1272,8 +1276,9 @@ function App() {
   if (notchMode) {
     return (
       <div className="notchwrap" style={{ paddingTop: `${notchH + NOTCH_GAP}px` }}>
+        {intro && !notchOut && <Burst top={notchH + NOTCH_GAP} />}
         <div
-          className={`morph ${notchOut ? "open" : ""} ${flash ? "flash" : ""}`}
+          className={`morph ${notchOut ? "open" : ""} ${flash ? "flash" : ""} ${intro ? "intro" : ""}`}
           style={morphVars}
           onMouseEnter={() => setNotchOut(true)}
         >
@@ -1290,6 +1295,52 @@ function App() {
       <div className={`card ${flash ? "flash" : ""}`} data-tauri-drag-region="deep">
         {cardBody}
       </div>
+    </div>
+  );
+}
+
+// ── launch reveal: comic "alarm ringing" doodles that draw themselves outward
+// around the pill (inside→out via stroke-dashoffset). Line shapes come straight
+// from design/lines.svg, split into individual strokes and each anchored a gap
+// away from the pill edge via translate(anchor) scale translate(-inner). ──
+const S = 0.78; // scale the design strokes down to fit the 200×64 pill
+// [ raw design subpath d, design inner point ix, iy, burst anchor ax, ay ]
+const BURST: [string, number, number, number, number][] = [
+  ["M60.5 6.5H2", 60.5, 6.5, 140, 22], // left-top horizontal
+  ["M359.5 2H405", 359.5, 2, 360, 18], // right-top horizontal
+  ["M195.5 102.5V138", 195.5, 102.5, 250, 80], // bottom center vertical
+  ["M356 42.5L378 52", 356, 42.5, 360, 40], // right-mid tick
+  ["M264.5 102.5L279.5 117.5", 264.5, 102.5, 302, 78], // bottom-right tick
+  ["M117.5 97.5L108.5 117.5", 117.5, 97.5, 198, 78], // bottom-left tick
+  [
+    "M60.5 86.5L59.6697 87.4841C51.4245 97.2562 40.3648 104.246 28 107.5",
+    60.5, 86.5, 150, 74,
+  ], // lower-left arc
+  [
+    "M351.5 86.5L363.089 103.285C364.977 106.018 367.713 108.054 370.874 109.077L376.255 110.818C380.151 112.078 384.389 110.348 386.29 106.72L386.523 106.273C387.75 103.933 387.657 101.12 386.279 98.8653L386.111 98.5908C384.31 95.6444 380.658 94.4109 377.44 95.6624C375.282 96.5013 373.666 98.3348 373.105 100.58L372.567 102.733C372.193 104.229 372.126 105.785 372.369 107.308L373.014 111.339C373.645 115.283 375.82 118.814 379.058 121.153C381.621 123.004 384.701 124 387.862 124H388.108C391.908 124 395.581 122.63 398.453 120.141L401.5 117.5",
+    351.5, 86.5, 352, 74,
+  ], // lower-right arc + curl
+];
+function Burst({ top }: { top: number }) {
+  // fresh random draw order every launch: shuffle evenly-spaced delay slots so
+  // the strokes pop in a different sequence each time but stay nicely spread out
+  const delays = useMemo(() => {
+    const slots = BURST.map((_, i) => i * 0.055); // even spacing, no clustering
+    for (let i = slots.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [slots[i], slots[j]] = [slots[j], slots[i]];
+    }
+    return slots.map((s) => s + Math.random() * 0.03); // + a little jitter
+  }, []);
+  return (
+    <div className="burst" style={{ top: `${top}px` }}>
+      <svg viewBox="0 0 500 210" fill="none">
+        {BURST.map(([d, ix, iy, ax, ay], i) => (
+          <g key={i} transform={`translate(${ax} ${ay}) scale(${S}) translate(${-ix} ${-iy})`}>
+            <path d={d} pathLength={1} style={{ animationDelay: `${0.26 + delays[i]}s` }} />
+          </g>
+        ))}
+      </svg>
     </div>
   );
 }

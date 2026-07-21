@@ -84,6 +84,81 @@ body,
 .morph.flash {
   animation: pop 0.35s steps(1) 0s 4;
 }
+/* launch reveal: clock springs down out of the notch, lil bit of overshoot */
+.morph.intro {
+  animation: morphIn 0.52s cubic-bezier(0.34, 1.56, 0.6, 1) both;
+}
+@keyframes morphIn {
+  from {
+    opacity: 0;
+    transform: translateY(-58px) translateZ(0);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) translateZ(0);
+  }
+}
+
+/* the doodle burst that draws itself around the pill on launch */
+.burst {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 500px;
+  height: 210px;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 0;
+  animation: burstFade 2.1s ease forwards;
+}
+.burst svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  display: block;
+}
+.burst path {
+  stroke: var(--line);
+  stroke-width: 6.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke; /* keep thickness constant through the scale transform */
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  transform-box: fill-box;
+  transform-origin: center;
+  /* expo draw (snappy, not linear) + a springy scale pop that overshoots & settles */
+  animation:
+    draw 0.5s cubic-bezier(0.16, 1, 0.3, 1) both,
+    pop 0.5s cubic-bezier(0.34, 1.7, 0.5, 1) both;
+}
+@keyframes draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes pop {
+  from {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  55% {
+    opacity: 1;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@keyframes burstFade {
+  0%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
 /* two layers, each a FIXED size centered at the top so they never reflow.
    They don't just get revealed — they scale + fade so the content grows out of
    the notch and settles into place (the "dynamic" part). */
