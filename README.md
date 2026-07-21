@@ -4,7 +4,7 @@ A notch-native pomodoro widget for macOS. It lives **behind the MacBook notch** 
 
 Native Tauri app (Rust + React) — ~9MB, sips battery, no Electron. A [910studio](https://910.studio) joint.
 
-### ⬇️ [Download the latest release](https://github.com/Ganaa0910/pomo/releases/latest)
+### ⬇️ [Download the latest release](https://github.com/910studio/pomo/releases/latest)
 
 Grab the `.dmg`, drag `pomo.app` into `/Applications`. It's unsigned, so first launch needs a **right-click → Open** (see [Build the app](#build-the-app) for the one-liner). Or [build it yourself](#run-it).
 
@@ -59,7 +59,7 @@ When the widget is focused (float mode, or after clicking it), the bare keys `s 
 **Prereqs:** [Node](https://nodejs.org) + [pnpm](https://pnpm.io), [Rust](https://rustup.rs), and Xcode Command Line Tools (`xcode-select --install`).
 
 ```bash
-git clone https://github.com/Ganaa0910/pomo.git
+git clone https://github.com/910studio/pomo.git
 cd pomo
 pnpm install
 pnpm tauri dev      # run it
