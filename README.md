@@ -4,6 +4,10 @@ A notch-native pomodoro widget for macOS. It lives **behind the MacBook notch** 
 
 Native Tauri app (Rust + React) — ~9MB, sips battery, no Electron. A [910studio](https://910.studio) joint.
 
+### ⬇️ [Download the latest release](https://github.com/Ganaa0910/pomo/releases/latest)
+
+Grab the `.dmg`, drag `pomo.app` into `/Applications`. It's unsigned, so first launch needs a **right-click → Open** (see [Build the app](#build-the-app) for the one-liner). Or [build it yourself](#run-it).
+
 ```
         ▁▁▁▁▁▁▁▁▁         ← the notch
        ▕ ███████ ▏
@@ -28,6 +32,7 @@ Native Tauri app (Rust + React) — ~9MB, sips battery, no Electron. A [910studi
 - **Sync mode** — a count-up "interruption" timer for when something pulls you off-task, so the pomodoro doesn't lie about your focus time.
 - **Voice memos** — while in sync mode, record a quick mic memo. It shows a **chunky pixel spectrum** that dances with your voice, saves to `~/.pomo/memos/`, drops a ▶ chip into the active project note, and plays back natively — all without leaving the widget.
 - **Per-project rich notes** — a real [TipTap](https://tiptap.dev)/ProseMirror editor that reads/writes plain **Markdown on disk**. Bold, highlight, headings, checkboxes, and nested lists (`Tab` / `⇧Tab`). WYSIWYG in the widget, plain `.md` for everything else (Raycast, git, your editor).
+- **Notch drop-zone** — a Yoink-style file shelf that lives in the notch. Drag any file onto the widget and it stashes as a **pixelated preview chip** (QuickLook thumbnail, downscaled to pixel art); drag it back out into Finder / Slack / an upload field and a copy is delivered. Ephemeral by design — nothing's stored, the shelf clears on quit. The doodle burst on launch even samples what's behind the notch so its lines stay visible on any wallpaper.
 - **Weather** — temperature + a day/night-aware pixel icon in the panel corner ([Open-Meteo](https://open-meteo.com), located by IP, no key).
 - **Float mode** — flip out of the notch into a classic always-on-top floating window with a PIP two-finger trackpad fling to any screen corner.
 - **Design** — pixel-art icon set, the Minecraft typeface, cartoon hard-shadows, cream / ink / rust palette. Shows over other apps' fullscreen Spaces.

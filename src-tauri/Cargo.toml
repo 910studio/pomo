@@ -25,9 +25,11 @@ serde_json = { version = "1", features = ["preserve_order"] }
 chrono = "0.4"
 base64 = "0.22"
 tauri-plugin-global-shortcut = "2.3.2"
+tauri-plugin-drag = "2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSResponder", "NSView", "NSGraphics", "NSEvent"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSArray", "NSString", "NSURL"] }
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSResponder", "NSView", "NSGraphics", "NSEvent", "NSPasteboard", "NSWorkspace"] }
 

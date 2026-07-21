@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize, LogicalPosition, currentMonitor } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { Extension } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
@@ -48,6 +49,7 @@ const CARD = { w: 500, h: 248 }; // expanded: full landscape card
 const NOTCH_GAP = 8; // breathing room between the physical notch and the widget
 const SHADOW_ROOM = 20; // transparent px below the widget so its drop shadow isn't clipped
 const SIDE_ROOM = 20; // transparent px each side, same reason (shadow spread)
+const SHELF_ROOM = 112; // transparent px reserved below the card for the file shelf
 const FLOAT_HOME = { x: 860, y: 80 };
 
 const setPosOf = (cycle: number) => ((cycle - 1) % CYCLES_PER_SET) + 1;
@@ -181,10 +183,115 @@ function App() {
   const [paused, setPaused] = useState(false);
   const [flash, setFlash] = useState(false);
   const [intro, setIntro] = useState(true); // launch reveal: clock springs in + doodle burst draws once
+  const [darkBg, setDarkBg] = useState(false); // what's behind the notch is dark → light-ink doodles
   useEffect(() => {
     const t = setTimeout(() => setIntro(false), 2200);
     return () => clearTimeout(t);
   }, []);
+
+  // ── SPIKE: notch drop-zone. prove the round-trip — drop a file onto the
+  //    click-through notch, then drag it back out into Finder. ──
+  // ── notch drop-zone: ephemeral file shelf. drop a file on the notch → it's held
+  //    as a chip; drag it back out (a copy is delivered) and the chip is removed.
+  //    nothing is stored — the shelf clears on quit. ──
+  const [shelf, setShelf] = useState<string[]>([]);
+  const [dragOver, setDragOver] = useState(false); // a file-drag is live on screen
+  const [removing, setRemoving] = useState<string[]>([]); // chips playing their pop-out
+  const [previews, setPreviews] = useState<Record<string, { thumb: string; icon: string }>>({});
+  const previewsRef = useRef(previews);
+  useEffect(() => {
+    previewsRef.current = previews;
+  }, [previews]);
+  const dragOverRef = useRef(false);
+  const draggingOutRef = useRef(false); // we're flinging a chip out → ignore self-drops
+  // catch drops (Tauri window drag-drop) → stash the paths
+  useEffect(() => {
+    const un = getCurrentWindow().onDragDropEvent((e) => {
+      const p = e.payload;
+      if (draggingOutRef.current) return; // our own chip bounced back onto us — ignore
+      if (p.type === "drop" && "paths" in p && p.paths.length) {
+        // LIFO: newest drop goes to the front (and re-dropping moves it to front)
+        setShelf((prev) => [...new Set([...p.paths, ...prev])]);
+        setDragOver(false);
+        dragOverRef.current = false;
+      }
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+  // fetch a pixel preview for any freshly-stashed file
+  useEffect(() => {
+    shelf.forEach((path) => {
+      if (previewsRef.current[path]) return;
+      invoke<{ thumb: string; icon: string }>("file_preview", { path })
+        .then((pv) => setPreviews((m) => ({ ...m, [path]: pv })))
+        .catch(() => {});
+    });
+  }, [shelf]);
+  // poll the native drag detector so the collapsed (click-through) notch wakes up
+  // and becomes a real drop target the moment a file-drag starts anywhere on screen
+  useEffect(() => {
+    const id = setInterval(async () => {
+      const active = await invoke<boolean>("drag_active").catch(() => false);
+      if (active !== dragOverRef.current) {
+        dragOverRef.current = active;
+        setDragOver(active);
+        // drop the window to a droppable level while a drag is live, restore after
+        invoke("drop_ready", { on: active }).catch(() => {});
+      }
+    }, 80);
+    return () => clearInterval(id);
+  }, []);
+  // remove a chip with a pop-out animation, then drop it from state
+  const removeChip = useCallback((path: string) => {
+    setRemoving((r) => (r.includes(path) ? r : [...r, path]));
+    setTimeout(() => {
+      setShelf((s) => s.filter((x) => x !== path));
+      setRemoving((r) => r.filter((x) => x !== path));
+      setPreviews((m) => {
+        const { [path]: _drop, ...rest } = m;
+        return rest;
+      });
+    }, 200);
+  }, []);
+  // a chip only starts dragging out after the pointer MOVES a few px — a plain
+  // click (or a tiny nudge) must not start a drag (that's what removed chips on
+  // click: startDrag on mousedown + release-on-self counted as "Dropped").
+  const pendingDrag = useRef<{ path: string; x: number; y: number } | null>(null);
+  const armDrag = useCallback((path: string, ev: React.MouseEvent) => {
+    ev.preventDefault();
+    pendingDrag.current = { path, x: ev.clientX, y: ev.clientY };
+  }, []);
+  useEffect(() => {
+    const move = (e: MouseEvent) => {
+      const pd = pendingDrag.current;
+      if (!pd || Math.hypot(e.clientX - pd.x, e.clientY - pd.y) < 7) return;
+      pendingDrag.current = null;
+      const path = pd.path;
+      const fire = (icon: string) => {
+        draggingOutRef.current = true;
+        startDrag({ item: [path], icon, mode: "copy" }, ({ result }) => {
+          draggingOutRef.current = false;
+          if (result === "Dropped") removeChip(path); // landed somewhere → copy delivered
+        }).catch(() => {
+          draggingOutRef.current = false;
+        });
+      };
+      const cached = previewsRef.current[path]?.icon;
+      if (cached) fire(cached);
+      else invoke<string>("drag_icon").then(fire).catch(() => fire(""));
+    };
+    const up = () => {
+      pendingDrag.current = null; // released without moving → it was a click, do nothing
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+  }, [removeChip]);
   const [notesHover] = useState(false); // legacy hover flag (kept for key nav guard)
   const [notesPinned, setNotesPinned] = useState(false); // Cmd+P pinned open
   const [showCheat, setShowCheat] = useState(false); // "?" shortcut cheat sheet
@@ -198,6 +305,15 @@ function App() {
   const [notchMode, setNotchMode] = useState(true);
   const [notchOut, setNotchOut] = useState(false); // expanded (hovered) vs tucked away
   const [notchH, setNotchH] = useState(32); // notch strip height, reported by the backend
+  // sample what's actually behind the widget once it's docked (re-check when the
+  // dock geometry settles) so the launch doodles contrast their real backdrop
+  useEffect(() => {
+    if (!notchMode) return;
+    const t = setTimeout(() => {
+      invoke<boolean>("bg_is_dark").then(setDarkBg).catch(() => {});
+    }, 350);
+    return () => clearTimeout(t);
+  }, [notchMode, notchH]);
   const notchModeRef = useRef(false);
   const notchOutRef = useRef(false);
   const peekUntil = useRef(0); // an announce-peek stays out until this timestamp
@@ -232,7 +348,9 @@ function App() {
       const over = await invoke<boolean>("mouse_over", rect).catch(() => false);
       if (over) {
         outSince = 0;
-        if (!notchOutRef.current) setNotchOut(true);
+        // don't expand the card while a file-drag is live — keep the small pill
+        // drop target instead of ballooning the zone to card size
+        if (!notchOutRef.current && !dragOverRef.current) setNotchOut(true);
       } else if (notchOutRef.current) {
         // stay out while pinned notes or an announce-peek is running (recording
         // no longer holds it open — the pill shows the live waveform instead)
@@ -726,7 +844,7 @@ function App() {
     const attempt = () => {
       invoke<number>("notch_dock", {
         w: CARD.w + 2 * SIDE_ROOM,
-        h: notchH + NOTCH_GAP + CARD.h + SHADOW_ROOM,
+        h: notchH + NOTCH_GAP + CARD.h + SHADOW_ROOM + SHELF_ROOM,
         float: false,
       })
         .then((nh) => {
@@ -747,12 +865,11 @@ function App() {
   // click-through when collapsed so the big transparent window doesn't eat clicks
   // in empty space; interactive when expanded. Hover is detected natively regardless.
   useEffect(() => {
-    if (!notchMode) {
-      getCurrentWindow().setIgnoreCursorEvents(false).catch(() => {});
-      return;
-    }
-    getCurrentWindow().setIgnoreCursorEvents(!notchOut).catch(() => {});
-  }, [notchMode, notchOut]);
+    // interactive when expanded, while a file-drag is live (to catch the drop), or
+    // while the shelf has chips to grab; click-through otherwise
+    const interactive = notchOut || dragOver || shelf.length > 0;
+    getCurrentWindow().setIgnoreCursorEvents(!interactive).catch(() => {});
+  }, [notchMode, notchOut, dragOver, shelf.length]);
 
   // leaving notch mode → restore the floating window level + home position
   const wasNotch = useRef(false);
@@ -1276,15 +1393,71 @@ function App() {
   if (notchMode) {
     return (
       <div className="notchwrap" style={{ paddingTop: `${notchH + NOTCH_GAP}px` }}>
-        {intro && !notchOut && <Burst top={notchH + NOTCH_GAP} />}
+        {intro && !notchOut && <Burst top={notchH + NOTCH_GAP} dark={darkBg} />}
         <div
-          className={`morph ${notchOut ? "open" : ""} ${flash ? "flash" : ""} ${intro ? "intro" : ""}`}
+          className={`morph ${notchOut ? "open" : ""} ${flash ? "flash" : ""} ${intro ? "intro" : ""} ${
+            dragOver ? "drag" : ""
+          }`}
           style={morphVars}
           onMouseEnter={() => setNotchOut(true)}
         >
           <div className="morph-pill">{pillBody}</div>
           <div className="morph-card">{cardBody}</div>
+          {/* SPIKE: drop target overlay while a file-drag is live on screen */}
+          {dragOver && (
+            <div className="dropzone">
+              <Icon name="plus" size={26} />
+              <span>DROP FILE</span>
+            </div>
+          )}
         </div>
+        {/* SPIKE: the shelf — stashed files sit below the pill; drag any chip back
+            out into Finder. Visible the moment something is stashed (drop confirm). */}
+        {shelf.length > 0 && (
+          <div
+            className="shelf"
+            style={{
+              top: `${notchH + NOTCH_GAP + (notchOut ? CARD.h : MINI.h) + 10}px`,
+              // explicit width (chip 66 + gap 8, + padding/border 24) so it can
+              // animate elastically as chips add/remove instead of snapping
+              width: `${Math.min(74 * shelf.length + 16, 336)}px`,
+            }}
+          >
+            {shelf.map((p) => {
+              const pv = previews[p];
+              return (
+                <div
+                  key={p}
+                  className={`shelfchip ${removing.includes(p) ? "removing" : ""}`}
+                  title={p}
+                  onMouseDown={(e) => armDrag(p, e)}
+                  onDragStart={(e) => e.preventDefault()}
+                >
+                  {pv?.thumb ? (
+                    <img className="pxprev" src={pv.thumb} alt="" draggable={false} />
+                  ) : (
+                    <span className="shelfico">
+                      <Icon name="file" size={30} />
+                    </span>
+                  )}
+                  <span className="shelfname">{p.split("/").pop()}</span>
+                  <button
+                    className="shelfx"
+                    title="remove"
+                    onMouseDown={(e) => {
+                      // remove on PRESS so the chip's drag-out can't swallow it
+                      e.stopPropagation();
+                      e.preventDefault();
+                      removeChip(p);
+                    }}
+                  >
+                    <Icon name="times" size={11} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     );
   }
@@ -1303,25 +1476,26 @@ function App() {
 // around the pill (inside→out via stroke-dashoffset). Line shapes come straight
 // from design/lines.svg, split into individual strokes and each anchored a gap
 // away from the pill edge via translate(anchor) scale translate(-inner). ──
-const S = 0.78; // scale the design strokes down to fit the 200×64 pill
+const S = 0.78; // scale the design strokes down to fit the pill
+// anchors give a clean ~14px gap off the 210×60 pill (spans x[145,355] in the burst)
 // [ raw design subpath d, design inner point ix, iy, burst anchor ax, ay ]
 const BURST: [string, number, number, number, number][] = [
-  ["M60.5 6.5H2", 60.5, 6.5, 140, 22], // left-top horizontal
-  ["M359.5 2H405", 359.5, 2, 360, 18], // right-top horizontal
+  ["M60.5 6.5H2", 60.5, 6.5, 131, 24], // left-top horizontal
+  ["M359.5 2H405", 359.5, 2, 369, 18], // right-top horizontal
   ["M195.5 102.5V138", 195.5, 102.5, 250, 80], // bottom center vertical
-  ["M356 42.5L378 52", 356, 42.5, 360, 40], // right-mid tick
+  ["M356 42.5L378 52", 356, 42.5, 369, 42], // right-mid tick
   ["M264.5 102.5L279.5 117.5", 264.5, 102.5, 302, 78], // bottom-right tick
   ["M117.5 97.5L108.5 117.5", 117.5, 97.5, 198, 78], // bottom-left tick
   [
     "M60.5 86.5L59.6697 87.4841C51.4245 97.2562 40.3648 104.246 28 107.5",
-    60.5, 86.5, 150, 74,
+    60.5, 86.5, 137, 76,
   ], // lower-left arc
   [
     "M351.5 86.5L363.089 103.285C364.977 106.018 367.713 108.054 370.874 109.077L376.255 110.818C380.151 112.078 384.389 110.348 386.29 106.72L386.523 106.273C387.75 103.933 387.657 101.12 386.279 98.8653L386.111 98.5908C384.31 95.6444 380.658 94.4109 377.44 95.6624C375.282 96.5013 373.666 98.3348 373.105 100.58L372.567 102.733C372.193 104.229 372.126 105.785 372.369 107.308L373.014 111.339C373.645 115.283 375.82 118.814 379.058 121.153C381.621 123.004 384.701 124 387.862 124H388.108C391.908 124 395.581 122.63 398.453 120.141L401.5 117.5",
-    351.5, 86.5, 352, 74,
+    351.5, 86.5, 361, 76,
   ], // lower-right arc + curl
 ];
-function Burst({ top }: { top: number }) {
+function Burst({ top, dark }: { top: number; dark: boolean }) {
   // fresh random draw order every launch: shuffle evenly-spaced delay slots so
   // the strokes pop in a different sequence each time but stay nicely spread out
   const delays = useMemo(() => {
@@ -1333,7 +1507,7 @@ function Burst({ top }: { top: number }) {
     return slots.map((s) => s + Math.random() * 0.03); // + a little jitter
   }, []);
   return (
-    <div className="burst" style={{ top: `${top}px` }}>
+    <div className={`burst ${dark ? "light" : ""}`} style={{ top: `${top}px` }}>
       <svg viewBox="0 0 500 210" fill="none">
         {BURST.map(([d, ix, iy, ax, ay], i) => (
           <g key={i} transform={`translate(${ax} ${ay}) scale(${S}) translate(${-ix} ${-iy})`}>

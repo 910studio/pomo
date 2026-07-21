@@ -123,6 +123,12 @@ body,
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke; /* keep thickness constant through the scale transform */
+}
+/* dark wallpaper behind the notch → light strokes so the doodles stay visible */
+.burst.light path {
+  stroke: #f4efe6;
+}
+.burst path {
   stroke-dasharray: 1;
   stroke-dashoffset: 1;
   transform-box: fill-box;
@@ -199,6 +205,175 @@ body,
   opacity: 1;
   transform: translateX(-50%) scale(1);
   pointer-events: auto;
+}
+
+/* ── notch drop-zone ── */
+.morph.drag {
+  border-color: var(--rust);
+  border-style: dashed;
+}
+.dropzone {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: var(--paper);
+  color: var(--rust);
+  font-family: "Minecraft", monospace;
+  font-size: 12px;
+  letter-spacing: 1px;
+  animation: dropbob 0.7s ease-in-out infinite;
+}
+@keyframes dropbob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+/* the shelf: a single horizontal scrolling row of big pixel-preview chips */
+.shelf {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 8px;
+  padding: 8px 9px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--panel2);
+  border: 3px solid var(--line);
+  border-radius: 13px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  animation: shelfin 0.28s cubic-bezier(0.34, 1.56, 0.6, 1) backwards;
+  /* slide with the morph, grow on hover, and stretch elastically as chips add/remove */
+  transition:
+    top 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.2s cubic-bezier(0.34, 1.56, 0.6, 1),
+    width 0.4s cubic-bezier(0.34, 1.45, 0.5, 1);
+}
+.shelf:hover {
+  transform: translateX(-50%) scale(1.045);
+}
+.shelf::-webkit-scrollbar {
+  height: 6px;
+}
+.shelf::-webkit-scrollbar-thumb {
+  background: var(--stone);
+  border-radius: 3px;
+}
+.shelf::-webkit-scrollbar-track {
+  background: transparent;
+}
+@keyframes shelfin {
+  /* no opacity fade — a faded container would hide the first chip's pop-in */
+  from {
+    transform: translateX(-50%) translateY(-7px) scale(0.96);
+  }
+  to {
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+.shelfchip {
+  position: relative;
+  flex: none;
+  width: 66px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: grab;
+  transform-origin: center;
+  animation: chippop 0.3s cubic-bezier(0.34, 1.7, 0.5, 1) backwards; /* pop in when added */
+}
+.shelfchip.removing {
+  animation: chippopout 0.2s ease forwards; /* pop out on delete / drag-out */
+  pointer-events: none;
+}
+.shelfchip:active {
+  cursor: grabbing;
+}
+@keyframes chippop {
+  from {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes chippopout {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+}
+.pxprev,
+.shelfico {
+  width: 58px;
+  height: 58px;
+  flex: none;
+  border: 2px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.pxprev {
+  image-rendering: pixelated; /* chunky pixel-art scaling of the tiny thumbnail */
+  object-fit: cover;
+}
+.shelfico {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--stone);
+}
+.shelfname {
+  max-width: 66px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+}
+.shelfx {
+  position: absolute;
+  top: -6px;
+  right: -1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 19px;
+  height: 19px;
+  padding: 0;
+  background: var(--panel);
+  border: 2px solid var(--line);
+  border-radius: 50%;
+  color: var(--ink);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.shelfchip:hover .shelfx {
+  opacity: 1;
+}
+.shelfx:hover {
+  background: var(--rust);
+  color: var(--cream);
 }
 
 .pill-clock {
