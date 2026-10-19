@@ -466,10 +466,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
- "js-sys",
  "num-traits",
  "serde",
- "wasm-bindgen",
  "windows-link 0.2.1",
 ]
 
@@ -2643,13 +2641,11 @@ name = "pomo"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "chrono",
  "image",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "serde",
- "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-drag",
@@ -3083,7 +3079,6 @@ version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
- "indexmap 2.14.0",
  "itoa",
  "memchr",
  "serde",
