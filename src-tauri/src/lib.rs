@@ -156,32 +156,35 @@ unsafe fn notch_dock_impl(window: &tauri::WebviewWindow, w: f64, h: f64, float: 
     Ok(strip)
 }
 
-/// Is the global mouse pointer inside a window-local rect right now?
-/// (x, y from the window's TOP-LEFT, logical points; w<=0 → whole frame.)
-/// DOM hover events don't fire while another app is focused, so the frontend
-/// polls this native hit test instead — hover works system-wide.
+/// Global mouse pointer in WINDOW-LOCAL logical points (origin TOP-LEFT, same
+/// coordinate space as the webview's CSS pixels). Values outside the frame are
+/// returned as-is (negative / past the edge) so the caller can tell "off-window".
+///
+/// Two jobs, both of which DOM events can't do:
+///  1. hover while another app is focused — an inactive window gets no mouseenter.
+///  2. click-through hit testing — macOS `ignoresMouseEvents` is all-or-nothing
+///     for the whole window, and ours is permanently card-sized (540×420) while
+///     only a 210×60 pill is usually visible. The frontend rect-tests this point
+///     against the VISIBLE sub-regions (pill/card, shelf) and keeps the window
+///     click-through everywhere else, so the transparent slab stops eating the
+///     clicks and scrolls of whatever sits under the notch.
 #[tauri::command]
-fn mouse_over(window: tauri::WebviewWindow, x: f64, y: f64, w: f64, h: f64) -> Result<bool, String> {
+fn mouse_local(window: tauri::WebviewWindow) -> Result<(f64, f64), String> {
     #[cfg(target_os = "macos")]
     {
         let (tx, rx) = std::sync::mpsc::channel();
         let win = window.clone();
         window
             .run_on_main_thread(move || {
-                let res = (|| -> Result<bool, String> {
+                let res = (|| -> Result<(f64, f64), String> {
                     unsafe {
                         use objc2_app_kit::{NSEvent, NSWindow};
                         let ptr = win.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
                         let ns: &NSWindow = &*ptr;
                         let f = ns.frame(); // global, bottom-left origin
-                        let (rx0, ry0, rw, rh) = if w > 0.0 {
-                            // window-local top-left rect → global bottom-left rect
-                            (f.origin.x + x, f.origin.y + f.size.height - (y + h), w, h)
-                        } else {
-                            (f.origin.x, f.origin.y, f.size.width, f.size.height)
-                        };
                         let p = NSEvent::mouseLocation();
-                        Ok(p.x >= rx0 && p.x <= rx0 + rw && p.y >= ry0 && p.y <= ry0 + rh)
+                        // global bottom-left → window-local top-left
+                        Ok((p.x - f.origin.x, f.origin.y + f.size.height - p.y))
                     }
                 })();
                 let _ = tx.send(res);
@@ -191,8 +194,8 @@ fn mouse_over(window: tauri::WebviewWindow, x: f64, y: f64, w: f64, h: f64) -> R
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (window, x, y, w, h);
-        Ok(false)
+        let _ = window;
+        Err("unsupported".into())
     }
 }
 
@@ -778,7 +781,7 @@ pub fn run() {
             memo_stop,
             memo_playing,
             notch_dock,
-            mouse_over,
+            mouse_local,
             drag_active,
             drop_ready,
             bg_is_dark,

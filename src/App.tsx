@@ -204,6 +204,20 @@ function App() {
   }, [previews]);
   const dragOverRef = useRef(false);
   const draggingOutRef = useRef(false); // we're flinging a chip out → ignore self-drops
+  const shelfRef = useRef<HTMLDivElement | null>(null); // hit-tested for click-through
+  // ── click-through, one owner ──
+  // macOS ignoresMouseEvents is all-or-nothing per WINDOW, and ours is permanently
+  // 540×420 (card + shadow/shelf room) even when only the 210×60 pill shows. Flip it
+  // from ONE place, deduped, driven by a native pointer hit test against the visible
+  // rects — otherwise the transparent remainder eats clicks/scrolls in whatever app
+  // sits under the notch (which is exactly what a stashed file used to do).
+  const interactiveRef = useRef(true);
+  const setInteractive = useCallback((on: boolean) => {
+    if (interactiveRef.current === on) return;
+    interactiveRef.current = on;
+    getCurrentWindow().setIgnoreCursorEvents(!on).catch(() => {});
+  }, []);
+  const pressedRef = useRef(false); // a button is down → never yank interactivity mid-press
   // catch drops (Tauri window drag-drop) → stash the paths
   useEffect(() => {
     const un = getCurrentWindow().onDragDropEvent((e) => {
@@ -237,12 +251,15 @@ function App() {
       if (active !== dragOverRef.current) {
         dragOverRef.current = active;
         setDragOver(active);
+        // a drag just started: go interactive NOW (don't wait on the hover poll)
+        // so the whole pill is live the instant the file arrives
+        if (active) setInteractive(true);
         // drop the window to a droppable level while a drag is live, restore after
         invoke("drop_ready", { on: active }).catch(() => {});
       }
     }, 80);
     return () => clearInterval(id);
-  }, []);
+  }, [setInteractive]);
   // remove a chip with a pop-out animation, then drop it from state
   const removeChip = useCallback((path: string) => {
     setRemoving((r) => (r.includes(path) ? r : [...r, path]));
@@ -282,12 +299,18 @@ function App() {
       if (cached) fire(cached);
       else invoke<string>("drag_icon").then(fire).catch(() => fire(""));
     };
+    const down = () => {
+      pressedRef.current = true;
+    };
     const up = () => {
+      pressedRef.current = false;
       pendingDrag.current = null; // released without moving → it was a click, do nothing
     };
+    window.addEventListener("mousedown", down);
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
     return () => {
+      window.removeEventListener("mousedown", down);
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
     };
@@ -330,9 +353,12 @@ function App() {
   }, []);
 
   // hover must work while ANY app is focused — an inactive window gets no DOM
-  // mouseenter events, so poll a native global-pointer hit test instead. The
-  // window is always card-sized, so we test only the VISIBLE sub-rect: the small
-  // pill when collapsed, the full card when open (+8px slack for easy targeting).
+  // mouseenter events, so poll the native global pointer instead. One native call
+  // per tick gives us a window-local point; every rect test is done here in JS.
+  // The window is always card-sized, so we test only the VISIBLE sub-rects: the
+  // small pill when collapsed / the full card when open (+8px slack for easy
+  // targeting), plus the shelf's live DOM box. Their union is also exactly the
+  // region that may swallow the pointer — everything else stays click-through.
   useEffect(() => {
     if (!notchMode) return;
     let outSince = 0;
@@ -341,16 +367,28 @@ function App() {
     const top = notchH + NOTCH_GAP;
     const tick = async () => {
       if (!alive) return;
+      const [mx, my] = await invoke<[number, number]>("mouse_local").catch(() => [NaN, NaN]);
+      const inRect = (x: number, y: number, w: number, h: number) =>
+        mx >= x && mx <= x + w && my >= y && my <= y + h;
+
       const open = notchOutRef.current;
       const rw = open ? CARD.w : MINI.w;
       const rh = open ? CARD.h : MINI.h;
-      const rect = { x: (winW - rw) / 2 - 8, y: top - 8, w: rw + 16, h: rh + 16 };
-      const over = await invoke<boolean>("mouse_over", rect).catch(() => false);
+      const over = inRect((winW - rw) / 2 - 8, top - 8, rw + 16, rh + 16);
+      // the shelf's real box (post-transform), +6px slack. Absent = no chips.
+      const sr = shelfRef.current?.getBoundingClientRect();
+      const overShelf = !!sr && inRect(sr.left - 6, sr.top - 6, sr.width + 12, sr.height + 12);
+
       if (over) {
         outSince = 0;
         // don't expand the card while a file-drag is live — keep the small pill
         // drop target instead of ballooning the zone to card size
         if (!notchOutRef.current && !dragOverRef.current) setNotchOut(true);
+      } else if (overShelf || draggingOutRef.current) {
+        // FREEZE on the shelf: neither open nor close. The shelf is anchored under
+        // the morph, so toggling would slide it 188px out from under the cursor —
+        // which then re-toggles, and the chips oscillate instead of being grabbable.
+        outSince = 0;
       } else if (notchOutRef.current) {
         // stay out while pinned notes or an announce-peek is running (recording
         // no longer holds it open — the pill shows the live waveform instead)
@@ -363,6 +401,17 @@ function App() {
           setNotchOut(false);
         }
       }
+
+      // click-through everywhere the widget isn't actually drawn. Held button /
+      // live chip drag pin it interactive so a gesture can't be cut in half.
+      setInteractive(
+        over ||
+          overShelf ||
+          dragOverRef.current ||
+          draggingOutRef.current ||
+          pressedRef.current ||
+          !!pendingDrag.current
+      );
       if (alive) id = setTimeout(tick, 60);
     };
     let id = setTimeout(tick, 60);
@@ -370,7 +419,7 @@ function App() {
       alive = false;
       clearTimeout(id);
     };
-  }, [notchMode]);
+  }, [notchMode, notchH, setInteractive]);
 
   // cycle done → in notch mode the widget itself peeks out for 5s (hovering it
   // keeps it out); in float mode fall back to the macOS notification
@@ -862,14 +911,13 @@ function App() {
     };
   }, [notchMode, notchH]);
 
-  // click-through when collapsed so the big transparent window doesn't eat clicks
-  // in empty space; interactive when expanded. Hover is detected natively regardless.
+  // float mode is a normal window — always interactive. In notch mode the hover
+  // poll above owns click-through per-rect (a blanket "shelf has chips → the whole
+  // 540×420 frame is live" is what made the area under the notch dead to clicks
+  // and scrolling for as long as a file was stashed).
   useEffect(() => {
-    // interactive when expanded, while a file-drag is live (to catch the drop), or
-    // while the shelf has chips to grab; click-through otherwise
-    const interactive = notchOut || dragOver || shelf.length > 0;
-    getCurrentWindow().setIgnoreCursorEvents(!interactive).catch(() => {});
-  }, [notchMode, notchOut, dragOver, shelf.length]);
+    if (!notchMode) setInteractive(true);
+  }, [notchMode, setInteractive]);
 
   // leaving notch mode → restore the floating window level + home position
   const wasNotch = useRef(false);
@@ -1416,11 +1464,20 @@ function App() {
         {shelf.length > 0 && (
           <div
             className="shelf"
+            ref={shelfRef}
             style={{
               top: `${notchH + NOTCH_GAP + (notchOut ? CARD.h : MINI.h) + 10}px`,
               // explicit width (chip 66 + gap 8, + padding/border 24) so it can
               // animate elastically as chips add/remove instead of snapping
               width: `${Math.min(74 * shelf.length + 16, 336)}px`,
+            }}
+            // past 4 chips the row overflows: map a vertical trackpad swipe onto
+            // scrollLeft (a horizontal-only scroller ignores deltaY on its own)
+            onWheel={(e) => {
+              const el = e.currentTarget;
+              if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; // native handles it
+              if (el.scrollWidth <= el.clientWidth) return;
+              el.scrollLeft += e.deltaY;
             }}
           >
             {shelf.map((p) => {
