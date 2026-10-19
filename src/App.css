@@ -411,6 +411,128 @@ body,
   padding: 4px 6px;
   min-width: 0;
 }
+/* idle pill: Anton's latest build (dark half) + vitals bars (light half) */
+.pill-build {
+  flex-direction: column;
+  gap: 5px;
+  font-size: 14px;
+  text-transform: uppercase;
+}
+.pb-meta {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 9px;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.6;
+}
+.b-building .pb-state {
+  color: var(--amber);
+  animation: blink 1s steps(1) infinite;
+}
+.b-built .pb-state {
+  color: var(--mint);
+}
+.b-failed .pb-state {
+  color: var(--rust);
+}
+.pill-bars {
+  align-items: stretch;
+  gap: 4px;
+  padding: 4px 10px;
+}
+.pbar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: "Minecraft", monospace;
+  font-size: 8px;
+  color: var(--ink);
+}
+.pbar span {
+  width: 18px;
+}
+.pbar i {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(to right, var(--ink) calc(var(--v) * 100%), rgb(43 34 31 / 0.18) 0);
+}
+.pbar.hot i {
+  background: linear-gradient(to right, var(--rust) calc(var(--v) * 100%), rgb(43 34 31 / 0.18) 0);
+}
+/* idle card, right half: Anton's Umami board */
+.board {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  min-height: 0;
+  font-size: 10px;
+}
+.board-h {
+  display: flex;
+  justify-content: space-between;
+  font-family: "Minecraft", monospace;
+  font-size: 8px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--stone);
+}
+.site-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.site-name {
+  flex: 1;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.site-num {
+  font-variant-numeric: tabular-nums;
+  color: var(--stone);
+}
+.live {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ghost);
+}
+.live.on {
+  background: var(--mint);
+  animation: blink 1.2s steps(1) infinite;
+}
+.spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 16px;
+  margin-top: 2px;
+}
+.spark i {
+  flex: 1;
+  background: var(--ink);
+  border-radius: 1px 1px 0 0;
+}
+.board-pages {
+  margin-top: auto;
+  border-top: 1.5px solid var(--paper);
+  padding-top: 4px;
+  color: var(--stone);
+}
+.board-pages div {
+  display: flex;
+  gap: 6px;
+}
+.board-pages span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .pill-wave {
   display: flex;
   flex-direction: column;

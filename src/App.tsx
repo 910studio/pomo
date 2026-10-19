@@ -64,6 +64,106 @@ function elapsedMs(m: Model): number {
 
 const fmtRec = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
+// ── Anton (the droplet): idle pill shows its latest build + vitals ──
+type Build = { img: string; state: "building" | "built" | "failed"; at: number };
+// Umami, per site: today's numbers + last-24h hourly views (index 0 = oldest)
+type Site = { domain: string; live: number; visitors: number; views: number; hours: number[] };
+type Page = { domain: string; path: string; views: number };
+type Anton = { cpu: number; mem: number; disk: number; build: Build | null; sites: Site[]; pages: Page[] };
+const ANTON_POLL = 10_000;
+const ago = (t: number) => {
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  return s < 60 ? `${s | 0}s` : s < 3600 ? `${(s / 60) | 0}m` : s < 86400 ? `${(s / 3600) | 0}h` : `${(s / 86400) | 0}d`;
+};
+// The probe has no "failed" line, so infer it across polls: `live` remembers each
+// build's start; one that vanishes without minting a newer :latest image died.
+// `live`/`failed` are mutated — they're refs owned by the poller.
+function readProbe(raw: string, live: Record<string, number>, failed: Record<string, number>): Anton {
+  const now = Date.now();
+  let cpu = 0, mem = 0, disk = 0;
+  const latest: Record<string, number> = {};
+  const deployed: Build[] = [];
+  const building: Build[] = [];
+  const sites: Site[] = [];
+  const pages: Page[] = [];
+  const hourly: [string, number, number][] = [];
+  for (const line of raw.split("\n")) {
+    const f = line.split("|");
+    if (f[0] === "A") sites.push({ domain: f[2], live: +f[3], visitors: +f[4], views: +f[5], hours: Array(24).fill(0) });
+    else if (f[0] === "P") pages.push({ domain: f[1], path: f[2], views: +f[3] });
+    else if (f[0] === "H") hourly.push([f[1], +f[2], +f[3]]);
+    else if (f[0] === "V" && f[1] === "load") cpu = Math.min(1, parseFloat(f[2]) / +f[3]);
+    else if (f[0] === "V" && f[1] === "mem") mem = +f[2] / +f[3];
+    else if (f[0] === "V" && f[1] === "disk") disk = parseInt(f[4]) / 100;
+    else if (f[0] === "I" && f[2] === "latest") latest[f[1]] = Date.parse(f[3]);
+    else if (f[0] === "D") deployed.push({ img: f[1], state: "built", at: Date.parse(f[2]) });
+    // only tag latest = a deploy; other tags are test builds
+    else if (f[0] === "B" && f[3] === "latest") building.push({ img: f[1], state: "building", at: now - +f[2] * 1000 });
+  }
+  for (const [img, start] of Object.entries(live)) {
+    if (building.some((b) => b.img === img)) continue;
+    if (!(latest[img] >= start - 5000)) failed[img] = now; // 5s slack for clock skew
+    delete live[img];
+  }
+  for (const b of building) {
+    live[b.img] = b.at;
+    delete failed[b.img];
+  }
+  const pool = building.length
+    ? building
+    : [...deployed, ...Object.entries(failed).map(([img, at]): Build => ({ img, state: "failed", at }))];
+  const build = pool.reduce<Build | null>((a, b) => (!a || b.at > a.at ? b : a), null);
+  for (const [domain, ago, n] of hourly) {
+    const s = sites.find((x) => x.domain === domain);
+    if (s && ago < 24) s.hours[23 - ago] = n;
+  }
+  sites.sort((a, b) => b.views - a.views);
+  return { cpu, mem, disk, build, sites, pages };
+}
+const fmtN = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
+
+// idle card's right half: one row per site — today's numbers + 24h sparkline
+function AntonBoard({ a }: { a: Anton }) {
+  return (
+    <div className="board">
+      <div className="board-h">
+        <span>anton · today</span>
+        <span>live · visitors · views</span>
+      </div>
+      {a.sites.map((s) => {
+        const max = Math.max(1, ...s.hours);
+        return (
+          <div key={s.domain} className="site">
+            <div className="site-top">
+              <span className={`live ${s.live ? "on" : ""}`} />
+              <span className="site-name">{s.domain}</span>
+              <span className="site-num">
+                {s.live} · {fmtN(s.visitors)} · {fmtN(s.views)}
+              </span>
+            </div>
+            <div className="spark" title="pageviews, last 24h">
+              {s.hours.map((v, i) => (
+                <i key={i} style={{ height: `${Math.max(v ? 8 : 0, (v / max) * 100)}%` }} />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      <div className="board-pages">
+        {a.pages.slice(0, 2).map((p) => (
+          <div key={p.domain + p.path}>
+            <span>
+              {p.domain}
+              {p.path}
+            </span>
+            <b>{fmtN(p.views)}</b>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // WMO weather code → pixel icon (day/night aware)
 type WeatherState = { temp: number; icon: IconName } | null;
 function weatherIcon(code: number, day: boolean): IconName {
@@ -346,6 +446,26 @@ function App() {
   useEffect(() => {
     notchOutRef.current = notchOut;
   }, [notchOut]);
+
+  // poll Anton forever; a failed poll keeps the last picture rather than flicker
+  const [anton, setAnton] = useState<Anton | null>(null);
+  const antonLive = useRef<Record<string, number>>({});
+  const antonFailed = useRef<Record<string, number>>({});
+  useEffect(() => {
+    let alive = true;
+    let id = 0;
+    const tick = async () => {
+      const raw = await invoke<string>("anton_probe").catch(() => null);
+      if (!alive) return;
+      if (raw) setAnton(readProbe(raw, antonLive.current, antonFailed.current));
+      id = window.setTimeout(tick, ANTON_POLL);
+    };
+    tick();
+    return () => {
+      alive = false;
+      clearTimeout(id);
+    };
+  }, []);
 
   const toggleNotch = useCallback(() => {
     setNotchOut(false);
@@ -1264,8 +1384,35 @@ function App() {
   const clockHi = timeStr.split(":")[0];
   const clockLo = timeStr.split(":")[1];
 
-  // pill (minimized) content — clock + status/spectrum
-  const pillBody = (
+  // pill (minimized) content — idle: Anton's latest build + vitals bars;
+  // otherwise clock + status/spectrum
+  const pillBody =
+    phase === "idle" && !recording && anton ? (
+      <>
+        <div className={`pill-clock pill-build b-${anton.build?.state ?? "none"}`}>
+          <span className="pb-state">{anton.build?.state ?? "anton"}</span>
+          {anton.build && (
+            <span className="pb-meta">
+              {anton.build.img.replace(/-api$/, "")} · {ago(anton.build.at)}
+            </span>
+          )}
+        </div>
+        <div className="pill-side pill-bars">
+          {(
+            [
+              ["cpu", anton.cpu],
+              ["ram", anton.mem],
+              ["dsk", anton.disk],
+            ] as const
+          ).map(([k, v]) => (
+            <div key={k} className={`pbar ${v > 0.85 ? "hot" : ""}`}>
+              <span>{k}</span>
+              <i style={{ "--v": v } as CSSProperties} />
+            </div>
+          ))}
+        </div>
+      </>
+    ) : (
     <>
       <div className="pill-clock">
         <span className="clockglyph">
@@ -1294,7 +1441,7 @@ function App() {
         )}
       </div>
     </>
-  );
+    );
 
   // card (expanded) content — left panel + controls, right notes, cheat overlay
   const cardBody = (
@@ -1367,6 +1514,9 @@ function App() {
       </div>
 
       <div className="card-r">
+        {phase === "idle" && anton ? (
+          <AntonBoard a={anton} />
+        ) : (
         <NotesPanel
           list={noteList}
           active={activeNote}
@@ -1386,6 +1536,7 @@ function App() {
           workMin={workMin}
           onSetWorkMin={setWorkMin}
         />
+        )}
       </div>
 
       {showCheat && (

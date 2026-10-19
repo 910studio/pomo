@@ -568,6 +568,26 @@ fn notch_dock(window: tauri::WebviewWindow, w: f64, h: f64, float: bool) -> Resu
     }
 }
 
+/// Anton's read-only status feed (ops/anton-probe.sh in the Anton repo) over the
+/// `protech` ssh alias — its ControlMaster makes polls ~250ms after the first.
+/// Returns the raw pipe-delimited lines; the frontend parses. Blocking pool, not
+/// the main thread: a cold probe takes ~6s (docker stats).
+#[tauri::command]
+async fn anton_probe() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let out = std::process::Command::new("/usr/bin/ssh")
+            .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "protech", "/usr/local/sbin/anton-probe"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ── memo playback: native afplay, one at a time ──────────
 static PLAYER: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
 
@@ -795,7 +815,8 @@ pub fn run() {
             set_active_note,
             create_note,
             delete_note,
-            consume_open_request
+            consume_open_request,
+            anton_probe
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
