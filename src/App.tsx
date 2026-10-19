@@ -1324,12 +1324,6 @@ function App() {
     };
   }, [toggleSync, togglePause, toggleMemo, toggleNotch, skip]);
 
-  // auto-start a work block the moment the widget launches (no manual click)
-  useEffect(() => {
-    start();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // notes/todo: while the panel is open, re-read the active project note + list
   // so Raycast edits (and new projects) show live
   useEffect(() => {
@@ -1386,8 +1380,10 @@ function App() {
 
   // pill (minimized) content — idle: Anton's latest build + vitals bars;
   // otherwise clock + status/spectrum
+  // not working (never started, or paused) → the widget watches Anton instead
+  const showAnton = (phase === "idle" || paused) && !recording && anton;
   const pillBody =
-    phase === "idle" && !recording && anton ? (
+    showAnton ? (
       <>
         <div className={`pill-clock pill-build b-${anton.build?.state ?? "none"}`}>
           <span className="pb-state">{anton.build?.state ?? "anton"}</span>
@@ -1514,7 +1510,7 @@ function App() {
       </div>
 
       <div className="card-r">
-        {phase === "idle" && anton ? (
+        {showAnton ? (
           <AntonBoard a={anton} />
         ) : (
         <NotesPanel
